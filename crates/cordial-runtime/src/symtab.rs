@@ -18,7 +18,7 @@
 //! `bionic::pthread`'s `once` for the ABI comparison that has to be done, per
 //! symbol and measured, before adding a sixth.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::ffi::{c_char, c_int, c_void, CString};
 
 use crate::elf::Binding;
