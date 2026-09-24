@@ -9,6 +9,9 @@ find_package(X11 REQUIRED)
 
 add_subdirectory(native)
 
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/native/flag-names.txt
+  ${CMAKE_CURRENT_BINARY_DIR}/flag-names.txt COPYONLY)
+
 add_executable(roblox
   native/main.cpp
   native/elf_imports.cpp
