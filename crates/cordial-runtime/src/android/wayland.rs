@@ -4354,6 +4354,7 @@ fn constrain_toplevel() -> bool {
 /// `requested` and `confirmed` are deliberately separate; see
 /// [`POINTER_LOCK_REQUESTED`]. Cordial decides the first and the compositor
 /// decides the second, and a caller testing Cordial wants the first.
+#[allow(dead_code)]
 pub(crate) fn pointer_lock_report() -> String {
     let engine = match super::input::engine_wants_pointer_lock() {
         Some(v) => if v { "true" } else { "false" },
