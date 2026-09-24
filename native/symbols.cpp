@@ -98,19 +98,7 @@ void register_runtime_symbols(const std::string& path) {
         if (linker_symbol(imp.name)) continue;
 
         void* addr = nullptr;
-        if (imp.name == "ANativeWindow_fromSurface" ||
-            imp.name == "ANativeWindow_acquire" ||
-            imp.name == "ANativeWindow_release" ||
-            imp.name == "ANativeWindow_getWidth" ||
-            imp.name == "ANativeWindow_getHeight" ||
-            imp.name == "ANativeWindow_getFormat" ||
-            imp.name == "ANativeWindow_setBuffersGeometry" ||
-            imp.name == "ANativeWindow_lock" ||
-            imp.name == "ANativeWindow_unlockAndPost" ||
-            imp.name == "eglCreateWindowSurface") {
-            std::string wrapper = "cordial_" + imp.name;
-            addr = dlsym(RTLD_DEFAULT, wrapper.c_str());
-        }
+        addr = x11_symbol(imp.name.c_str());
 
         if (!addr) {
             for (const auto& l : libs) {
