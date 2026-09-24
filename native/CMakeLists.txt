@@ -248,7 +248,6 @@ if(PIPEWIRE_FOUND)
   add_custom_command(TARGET cordial_pipewire_backend_test POST_BUILD
     COMMAND cordial_pipewire_backend_test
     COMMENT "Running pipewire_backend fill_pcm checks (no PipeWire session needed)")
-  add_dependencies(cordial_liblog cordial_pipewire_backend_test)
 endif()
 
 add_executable(cordial_aaudio_input_callback_test EXCLUDE_FROM_ALL
@@ -257,7 +256,6 @@ target_compile_options(cordial_aaudio_input_callback_test PRIVATE -UNDEBUG)
 add_custom_command(TARGET cordial_aaudio_input_callback_test POST_BUILD
   COMMAND cordial_aaudio_input_callback_test
   COMMENT "Running AAudio input callback lifecycle checks")
-add_dependencies(cordial_liblog cordial_aaudio_input_callback_test)
 
 add_executable(cordial_aaudio_input_test EXCLUDE_FROM_ALL
   aaudio.cpp aaudio_input_callback.cpp aaudio_input_test.cpp)
@@ -265,38 +263,11 @@ target_compile_options(cordial_aaudio_input_test PRIVATE -UNDEBUG)
 add_custom_command(TARGET cordial_aaudio_input_test POST_BUILD
   COMMAND cordial_aaudio_input_test
   COMMENT "Running AAudio callback and blocking input ABI checks")
-add_dependencies(cordial_liblog cordial_aaudio_input_test)
 
 add_library(cordial_linker_shim STATIC shim.cpp)
 target_link_libraries(cordial_linker_shim PUBLIC linker)
 
 install(TARGETS cordial_linker_shim cordial_liblog linker ARCHIVE DESTINATION lib)
-
-# Vendored x86-64 CPU feature emulator (see third_party/libbadcpu/README.md).
-# Independent of the bionic subtree; built here so there is one native build.
-#
-# **Only on x86-64, and this is a build break rather than a nicety.**
-# `cpuid.cpp` includes `<cpuid.h>` and calls `__get_cpuid`, neither of which
-# exists on aarch64, so an ARM build fails at compile time here -- the first
-# thing that breaks, before anything interesting has been attempted.
-# `docs/multiarch.md` already says an ARM64 host "needs no feature emulator",
-# and it also claims this is gated in the build; it was not, and the claim was
-# written against a Meson build this project does not use.
-#
-# Nothing links it today: `crates/cordial-linker-sys/build.rs` names six
-# archives and `badcpu` is not among them. So gating it costs exactly nothing
-# and removes the first obstacle on a port nobody has started.
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
-  add_library(badcpu STATIC
-    ../third_party/libbadcpu/src/badcpu.cpp
-    ../third_party/libbadcpu/src/cpuid.cpp
-    ../third_party/libbadcpu/src/decoder.cpp
-    ../third_party/libbadcpu/src/emulator.cpp
-    ../third_party/libbadcpu/src/signal_handler.cpp
-  )
-  target_include_directories(badcpu PUBLIC ../third_party/libbadcpu/include)
-  install(TARGETS badcpu ARCHIVE DESTINATION lib)
-endif()
 
 # JNI virtual machine. Roblox's native code calls into Java through 518 statically
 # registered natives and expects a JavaVM to call back into; libjnivm supplies both
