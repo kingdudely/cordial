@@ -1638,7 +1638,7 @@ fn main() -> ExitCode {
     println!("registered {} virtual libraries", table.libraries.len());
 
     if let Err(e) = linker::set_library_path(&opt.lib_dir) {
-        eprintln!("bad --lib-dir: {e}");
+        eprintln!("bad --libroblox: {e}");
         return ExitCode::FAILURE;
     }
     println!("search path: {}", opt.lib_dir);
