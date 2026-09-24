@@ -211,8 +211,7 @@ use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use libadwaita as adw;
-use gtk4::prelude::GtkWindowExt;
+use gtk4::prelude::*;
 
 // ------------------------------------------------------------- wire layout
 //
@@ -2872,7 +2871,7 @@ impl WaylandWindow {
     /// everything that reaches this window runs on the thread that called
     /// `open`, and both callers above only ever do so from inside a
     /// `glib::MainContext` closure that main thread itself runs.
-    pub fn window(&self) -> &adw::Window {
+    pub fn window(&self) -> &gtk4::Window {
         self.host.0.window()
     }
 
