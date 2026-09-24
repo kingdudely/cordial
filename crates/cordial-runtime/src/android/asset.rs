@@ -936,6 +936,7 @@ impl Served {
         match self {
             Served::Overlay(source) => source.describe(),
             Served::Apk => "apk".into(),
+            Served::Directory => "directory".into(),
             Served::Missing => "missing".into(),
         }
     }
