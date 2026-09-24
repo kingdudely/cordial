@@ -193,7 +193,7 @@ pub fn resolve(from_env: Option<String>, from_plugin: Option<(String, String)>) 
 
 /// What the flag layers say, if anything, and who said it.
 fn plugin_request() -> Option<(String, String)> {
-    let resolved = crate::flags::resolve(crate::flags::collect());
+    let resolved = crate::flags::resolve(&crate::flags::collect());
     let entry = resolved.get(KEY)?;
     Some((entry.source.describe(), entry.value.clone()))
 }
