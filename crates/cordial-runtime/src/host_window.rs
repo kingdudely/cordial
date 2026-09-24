@@ -683,7 +683,6 @@ impl HostWindow {
     pub fn new(title: &str, width: i32, height: i32, content: &impl IsA<gtk::Widget>) -> Self {
         let header = gtk::HeaderBar::new();
         let toolbar = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        toolbar.append(&header);
         let overlay = gtk::Overlay::new();
         overlay.set_child(Some(content));
         let text_layer = gtk::Fixed::new();
@@ -780,6 +779,10 @@ impl HostWindow {
             .default_height(h)
             .child(&toolbar)
             .build();
+        // The HeaderBar is the window's titlebar. Keeping it inside the
+        // content area as well gives GNOME a native titlebar plus a second
+        // titlebar stacked directly underneath it.
+        window.set_titlebar(Some(&header));
 
         HostWindow {
             window,
