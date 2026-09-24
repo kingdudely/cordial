@@ -4313,50 +4313,10 @@ extern "C" {
     fn libc_exit(status: std::ffi::c_int) -> !;
 }
 
-/// The store behind `native/local_storage.cpp`'s `PlatformLocalStorageHandler`
-/// -- `ILocalStorageHandlerCore.setPlatformImpl`'s per-user, per-key secure
-/// values, which is a different thing from `RbxStorage` (the content cache)
-/// and from `LocalStorageManager`'s own `initStorageManagerNativeV3`. See that
-/// file's header for the full account of what the interface is and how it was
-/// confirmed; this module is the half of it the task that added it could not
-/// put in `secrets.rs`.
+/// Simple file-backed storage for the native local-storage bridge.
 ///
-/// **Why this is not a third `secrets::Kind`.** `secrets.rs` is this project's
-/// settled answer for where a per-profile secret goes -- the desktop Secret
-/// Service first, an announced `0600` file second, never a reason startup
-/// fails -- and the right move would have been to add a variant and call it.
-/// Two things stopped that. First, the task this module was written under
-/// left `secrets.rs` off limits to edit, on the reasoning that a file several
-/// agents have been relying on as a fixed reference should not move under
-/// them mid-session. Second, and the reason a variant would not have been
-/// enough even without that restriction: `Kind::load`/`save` hold exactly one
-/// document per profile, and what this interface asks for is an arbitrary
-/// number of small values keyed by an account id *and* a name the engine
-/// picks — `getSecureValue`, `setSecureValueForUser`, `deleteUserValues`, all
-/// of them shaped around a key that is not fixed at compile time the way
-/// `"cookies"` and `"identity"` are. So this reuses `secrets::active()` --
-/// the same environment variable, the same keyring-vs-file-vs-none decision,
-/// decided once and shared with the cookie jar and the identity mirror rather
-/// than asked a second time -- and carries its own small read/write/remove
-/// against the same `org.freedesktop.secrets` interface under its own schema,
-/// because that half of `secrets.rs` is `HashMap<String,String>`-shaped for
-/// one document and cannot be reused as-is for many.
-///
-/// **The same restraint on printing.** Nothing below prints a stored value or
-/// a user id at any verbosity, matching `secrets.rs`'s own header and
-/// AGENTS.md's rule that this project's stubs answer honestly rather than
-/// pretending. Key *names* are printed, the same way `secrets.rs` prints
-/// `"cookies"`/`"identity"` -- they identify which field failed, not whose
-/// account or what the field held.
-///
-/// **Why a fresh connection per call rather than `secrets.rs`'s worker
-/// thread.** That thread exists because `secrets.rs` is called on a flush
-/// cadence and a stuck keyring daemon must not freeze whichever thread asks
-/// next. Local storage's calls are a handful of account-scoped values, not a
-/// periodic save, so the simpler shape here — connect, ask, time out, drop
-/// the connection — is enough: a wedged daemon leaks one thread for the one
-/// call that hit it rather than jamming every later call behind a single
-/// stuck worker the way a shared thread would.
+/// The native ABI is retained because the engine calls these symbols directly.
+/// Values are stored under the active profile with normal 0600 file permissions.
 mod local_storage_secrets {
     use std::collections::HashMap;
     use std::ffi::CStr;
