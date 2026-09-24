@@ -1,49 +1,53 @@
 # Cordial Roblox Runner
 
-This fork is a standalone Linux Roblox runner.
+This fork is a standalone Linux Roblox runner implemented in C++.
 
-## Standalone runner usage
+## Standalone runner
 
-The fork's normal launch path now uses the configuration that previously required --host-libc --game-activity by default:
+The normal launch path is:
 
     ./roblox
 
-The default files are ./libroblox.so and ./assets. Override them with --libroblox <path> and --assets <path> when needed. A normal launch stays open until the window is closed; --run 0 is therefore no longer necessary. The old --host-libc, --jni-onload, and --game-activity switches remain accepted for compatibility.
+The defaults are `./libroblox.so` and `./assets`. Override them with:
 
-Roblox browser launch links can also be passed directly as the first argument. Both the desktop roblox-player: form and the roblox:// form are accepted:
+    ./roblox --libroblox /path/to/libroblox.so --assets /path/to/assets
 
-    ./roblox 'roblox-player:1+launchmode:play+...'
-    ./roblox 'roblox://experiences/start?placeId=1818'
+Optional window sizing:
 
-To make the browser's Play button launch the same binary, register both XDG URI schemes once:
+    ./roblox --width 1920 --height 1080
+
+The runtime creates an X11 host window, supplies Cordial's native Android/JNI compatibility layer, loads Roblox through the vendored Bionic linker, and forwards keyboard/mouse input through the existing C++ GameActivity bridge.
+
+The runtime layout can be:
+
+    build/
+    ├── roblox
+    ├── libroblox.so
+    └── assets/
+        ├── content/
+        ├── ssl/
+        ├── android/
+        └── ...
+
+It does not download an APK at launch. It uses the supplied `libroblox.so` and `assets/` directory directly.
+
+## Build
+
+Install a C++17 compiler, CMake, X11 development headers/libraries, and the native dependencies required by the bundled Bionic linker/JNI/audio layers.
+
+Configure and build:
+
+    cmake -S . -B build
+    cmake --build build -j$(nproc)
+
+The executable is `build/roblox`.
+
+The project contains no Rust workspace or Cargo build step. The required third-party runtime components remain vendored C++ projects (`mcpelauncher-linker` and `libjnivm`).
+
+## Browser URI handler
+
+The existing XDG helper can still register the two Roblox URI schemes:
 
     bash tools/install-roblox-handler.sh ./roblox
 
-That writes a desktop handler for x-scheme-handler/roblox and x-scheme-handler/roblox-player and points both at the supplied executable.
-
-The runtime expects this exact layout:
-
-```
-build/
-├── roblox
-├── libroblox.so
-└── assets/
-    ├── content/
-    ├── ssl/
-    ├── android/
-    └── ...
-```
-
-It does not download an APK at launch. It uses the supplied `libroblox.so` and reads the supplied `assets/` directory directly.
-
-Build a debug-friendly binary:
-
-```bash
-cargo build --release --bin roblox
-```
-
-Build a smaller distribution binary:
-
-```bash
-cargo build --profile minimal --bin roblox
-```
+The current C++ launcher accepts `--libroblox`, `--assets`, `--width`, and `--height`.
