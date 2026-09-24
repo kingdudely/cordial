@@ -24,6 +24,8 @@ use cordial_runtime::{stubs, symtab};
 use gtk4::prelude::*;
 
 struct Options {
+    libroblox: String,
+    assets: String,
     lib_dir: String,
     library: String,
     apk: Option<String>,
@@ -50,9 +52,8 @@ struct Options {
 const USAGE: &str = "\
 usage: roblox [options]
 
-  --lib-dir <dir>   override the executable's directory as the library directory
-  --library <name>  object to load (default: libroblox.so)
-  assets/            directory beside this executable; contains content/, ssl/, android/, etc.
+  --libroblox <f>   path to libroblox.so (default: ./libroblox.so)
+  --assets <dir>    path to the assets directory (default: ./assets)
   --read-asset <p>  read one asset through the AAsset API and report its size
   --check-overlays  report which overlay files match nothing in this build, then exit
   --client-settings <f>  newline-free list of flag names to pre-cache.
@@ -170,18 +171,12 @@ env:
                                      long each real eglSwapBuffers call blocked
 ";
 
-fn bundle_dir() -> Result<std::path::PathBuf, String> {
-    let exe = std::env::current_exe().map_err(|e| format!("cannot find executable path: {e}"))?;
-    exe.parent()
-        .map(std::path::Path::to_path_buf)
-        .ok_or_else(|| "executable has no parent directory".to_string())
-}
-
 fn parse() -> Result<Options, String> {
-    let bundle = bundle_dir()?;
     let mut opt = Options {
-        lib_dir: bundle.to_string_lossy().into_owned(),
-        library: "libroblox.so".into(),
+        libroblox: "./libroblox.so".into(),
+        assets: "./assets".into(),
+        lib_dir: String::new(),
+        library: String::new(),
         apk: None,
         profile: None,
         read_asset: None,
@@ -209,8 +204,8 @@ fn parse() -> Result<Options, String> {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--lib-dir" => opt.lib_dir = args.next().ok_or("--lib-dir needs a value")?,
-            "--library" => opt.library = args.next().ok_or("--library needs a value")?,
+            "--libroblox" => opt.libroblox = args.next().ok_or("--libroblox needs a path")?,
+            "--assets" => opt.assets = args.next().ok_or("--assets needs a path")?,
             // Which profile's storage this instance runs against. The profile is
             // an argument and the settings inside it are not, deliberately: one
             // value decides where everything else lives, and a setting passed on
@@ -290,10 +285,24 @@ fn parse() -> Result<Options, String> {
             other => return Err(format!("unrecognised argument: {other}")),
         }
     }
-    if opt.lib_dir.is_empty() {
-        return Err("--lib-dir is required".into());
-    }
+    derive_engine_paths(&mut opt)?;
     Ok(opt)
+}
+
+/// Derive the linker's search directory and soname from the explicit
+/// libroblox.so path.
+fn derive_engine_paths(opt: &mut Options) -> Result<(), String> {
+    let path = std::path::Path::new(&opt.libroblox);
+    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| format!("invalid --libroblox path: {}", opt.libroblox))?;
+
+    opt.lib_dir = dir.to_string_lossy().into_owned();
+    opt.library = name.to_owned();
+    Ok(())
 }
 
 /// The directory the engine should treat as its asset folder.
@@ -329,22 +338,15 @@ fn parse() -> Result<Options, String> {
 /// Falls back to the APK path if extraction fails, which keeps the old
 /// behaviour rather than refusing to start over an asset folder — the loader
 /// and asset paths still work without it.
-fn asset_folder(_apk: &Option<String>) -> String {
-    let root = match bundle_dir() {
-        Ok(dir) => dir.join("assets"),
-        Err(e) => {
-            eprintln!("assets: {e}");
-            return String::new();
-        }
-    };
-
-    cordial_runtime::android::asset::set_asset_root(&root);
+fn asset_folder(assets: &str) -> String {
+    let root = std::path::Path::new(assets);
+    cordial_runtime::android::asset::set_asset_root(root);
     root.join("content").to_string_lossy().into_owned()
 }
 
 /// Read Roblox's four-part engine version from the ASCII literals in libroblox.so.
-fn engine_version(lib_dir: &str) -> Option<String> {
-    let library = std::path::Path::new(lib_dir).join("libroblox.so");
+fn engine_version(libroblox: &str) -> Option<String> {
+    let library = std::path::Path::new(libroblox);
     let file = std::fs::File::open(library).ok()?;
     let mut reader = std::io::BufReader::new(file);
 
@@ -432,18 +434,22 @@ fn engine_version(lib_dir: &str) -> Option<String> {
 ///   files. Running from a checkout littered this repository.
 ///
 /// An Android app's working directory is its own sandbox, so giving the process
-/// one is the faithful behaviour rather than a workaround. `--lib-dir` and
-/// `--apk` are made absolute first, because they are the caller's paths and are
-/// allowed to be relative to the caller's directory.
+/// one is the faithful behaviour rather than a workaround. The explicit
+/// libroblox.so and assets paths are made absolute first, and may be relative
+/// to the caller's current directory.
 ///
 /// Never fatal: a client that starts in the wrong directory is more useful than
 /// one that refuses to start.
 fn enter_run_dir(opt: &mut Options) {
-    for p in [&mut opt.lib_dir] {
+    for p in [&mut opt.libroblox, &mut opt.assets] {
         if let Ok(abs) = std::fs::canonicalize(&*p) {
             *p = abs.to_string_lossy().into_owned();
         }
     }
+    // Keep the linker's derived directory/name synchronized with the canonical
+    // --libroblox path.
+    let _ = derive_engine_paths(opt);
+
     // The engine's working directory, inside whichever profile this instance was
     // given. This used to compute `instances/default` by hand while the rest of
     // the process had moved to `profiles/<name>`, which put the run directory and
@@ -1910,7 +1916,7 @@ fn main() -> ExitCode {
                         Ok(w) => {
                             let (width, height, _) = w.geometry();
                             cordial_runtime::android::config::set_screen(width, height);
-                            let apk_path = asset_folder(&opt.apk);
+                            let apk_path = asset_folder(&opt.assets);
                             // Order taken from a Waydroid capture of the real
                             // Android client (docs/traces/render-bringup-sequence.log),
                             // which logs:
@@ -2548,8 +2554,8 @@ fn main() -> ExitCode {
                                                 vec![files.as_str(), cache.as_str()],
                                             ),
                                         ];
-                                        let assets_now = asset_folder(&opt.apk);
-                                        let engine_ver = engine_version(&opt.lib_dir)
+                                        let assets_now = asset_folder(&opt.assets);
+                                        let engine_ver = engine_version(&opt.libroblox)
                                             .unwrap_or_default();
                                         if !engine_ver.is_empty() {
                                             // The native InitParams builder reads the same
@@ -2988,7 +2994,7 @@ fn main() -> ExitCode {
                                             // SAFETY: `p` is a native resolved via a symbol lookup against the loaded libroblox.so, which is never unloaded.
                                             match unsafe { linker::game_activity::set_init_params(
                                                 p,
-                                                &asset_folder(&opt.apk),
+                                                &asset_folder(&opt.assets),
                                                 width,
                                                 height,
                                             ) } {
@@ -3695,7 +3701,7 @@ fn main() -> ExitCode {
                                         // to ActivityNativeMain, not the AGDK
                                         // MainGameActivity, and this is the chain
                                         // that actually brings the client up.
-                                        let apk_path = asset_folder(&opt.apk);
+                                        let apk_path = asset_folder(&opt.assets);
                                         if let Some(f) = lib.symbol(
                                             "Java_com_roblox_engine_jni_NativeGLInterface_nativeAppBridgeV2InitWithParams",
                                         ) {
