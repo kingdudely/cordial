@@ -24,7 +24,6 @@ target_include_directories(roblox PRIVATE
 target_link_libraries(roblox PRIVATE
   cordial_linker_shim
   cordial_jni_shim
-  cordial_liblog
   jnivm
   logger
   linker
@@ -36,6 +35,12 @@ target_link_libraries(roblox PRIVATE
 )
 
 target_link_libraries(roblox PRIVATE X11::X11)
+
+# Export every native Android/audio compatibility symbol implemented by the
+# Cordial C++ layer so the Bionic linker can register them dynamically.
+target_link_options(roblox PRIVATE
+  -Wl,--whole-archive $<TARGET_FILE:cordial_liblog> -Wl,--no-whole-archive
+)
 
 target_link_options(roblox PRIVATE
   -Wl,--export-dynamic
