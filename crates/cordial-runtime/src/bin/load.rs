@@ -342,6 +342,82 @@ fn asset_folder(_apk: &Option<String>) -> String {
     root.join("content").to_string_lossy().into_owned()
 }
 
+/// Read Roblox's four-part engine version from the ASCII literals in libroblox.so.
+fn engine_version(lib_dir: &str) -> Option<String> {
+    let library = std::path::Path::new(lib_dir).join("libroblox.so");
+    let file = std::fs::File::open(library).ok()?;
+    let mut reader = std::io::BufReader::new(file);
+
+    const MIN_RUN: usize = 9;
+    const MAX_RUN: usize = 20;
+
+    fn candidate(run: &[u8]) -> Option<String> {
+        if !(MIN_RUN..=MAX_RUN).contains(&run.len()) {
+            return None;
+        }
+
+        let text = std::str::from_utf8(run).ok()?;
+        let parts: Vec<&str> = text.split('.').collect();
+        if parts.len() != 4
+            || !parts.iter().all(|part| {
+                !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())
+            })
+            || parts[0] != "2"
+        {
+            return None;
+        }
+
+        Some(text.to_string())
+    }
+
+    let mut found: Option<String> = None;
+    let mut run = Vec::with_capacity(MAX_RUN + 1);
+    let mut overlong = false;
+    let mut buffer = vec![0u8; 256 * 1024];
+
+    loop {
+        let read = std::io::Read::read(&mut reader, &mut buffer).ok()?;
+        if read == 0 {
+            break;
+        }
+
+        for &byte in &buffer[..read] {
+            if byte.is_ascii_digit() || byte == b'.' {
+                if run.len() == MAX_RUN {
+                    overlong = true;
+                    run.clear();
+                } else if !overlong {
+                    run.push(byte);
+                }
+                continue;
+            }
+
+            if !overlong {
+                if let Some(version) = candidate(&run) {
+                    match &found {
+                        Some(previous) if previous != &version => return None,
+                        _ => found = Some(version),
+                    }
+                }
+            }
+
+            run.clear();
+            overlong = false;
+        }
+    }
+
+    if !overlong {
+        if let Some(version) = candidate(&run) {
+            match &found {
+                Some(previous) if previous != &version => return None,
+                _ => found = Some(version),
+            }
+        }
+    }
+
+    found
+}
+
 /// The directory the engine runs *in*, and why it needs one of its own.
 ///
 /// Roblox builds several paths from a root it was never given and resolves them
@@ -1406,6 +1482,10 @@ fn main() -> ExitCode {
     cordial_runtime::identity::listen();
     cordial_runtime::identity::restore();
 
+    // Give Roblox the private working directory and CA path it expects from
+    // the Android sandbox. This also resolves the caller's relative lib/assets
+    // paths before the engine is loaded.
+    enter_run_dir(&mut opt);
 
     // Before the engine loads, so the governor is already up when the shader
     // compiles and the asset cache warms — the part of a launch most obviously
@@ -2469,6 +2549,17 @@ fn main() -> ExitCode {
                                             ),
                                         ];
                                         let assets_now = asset_folder(&opt.apk);
+                                        let engine_ver = engine_version(&opt.lib_dir)
+                                            .unwrap_or_default();
+                                        if !engine_ver.is_empty() {
+                                            // The native InitParams builder reads the same
+                                            // value to construct Roblox's user-agent.
+                                            std::env::set_var("CORDIAL_ENGINE_VERSION", &engine_ver);
+                                        } else {
+                                            println!(
+                                                "  engine version not readable from libroblox.so; not setting one"
+                                            );
+                                        }
                                         // The preferences file. `INFERRED`: no
                                         // capture line names it, unlike the app
                                         // policy below. The path is where the
@@ -2530,6 +2621,10 @@ fn main() -> ExitCode {
                                                 "Java_com_roblox_client_startup_MainGameActivity_nativeSetAssetPath",
                                                 "com/roblox/client/startup/MainGameActivity",
                                                 vec![assets_now.as_str()],
+                                            ),
+                                                "Java_com_roblox_engine_jni_NativeSettingsInterface_nativeSetRobloxVersion",
+                                                SETTINGS,
+                                                vec![engine_ver.as_str()],
                                             ),
                                             (
                                                 // The engine fetches its own
