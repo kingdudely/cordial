@@ -91,8 +91,20 @@ int main(int argc,char** argv) {
     std::filesystem::create_directories(lib_dir+"/appData/cache");
     std::filesystem::create_directories(lib_dir+"/appData/external");
 
-    std::ifstream flags("native/flag-names.txt");
-    if(flags) flag_names.assign(std::istreambuf_iterator<char>(flags),std::istreambuf_iterator<char>());
+    {
+        std::vector<std::filesystem::path> flag_paths;
+        flag_paths.emplace_back("native/flag-names.txt");
+        const auto exe_dir = std::filesystem::absolute(argv[0]).parent_path();
+        flag_paths.emplace_back(exe_dir / "flag-names.txt");
+        for (const auto& path : flag_paths) {
+            std::ifstream flags(path);
+            if (flags) {
+                flag_names.assign(std::istreambuf_iterator<char>(flags),
+                                  std::istreambuf_iterator<char>());
+                break;
+            }
+        }
+    }
 
     std::printf("Cordial C++ runtime\n  libroblox: %s\n  assets: %s\n",
                 lib_path.c_str(),assets.c_str());
