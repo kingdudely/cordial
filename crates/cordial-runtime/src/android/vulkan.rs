@@ -920,7 +920,7 @@ fn resolve_present_mode(
 
 /// What the flag layers say about [`PRESENT_MODE_KEY`], if anything.
 fn present_mode_from_flags() -> Option<(String, String)> {
-    let resolved = crate::flags::resolve(crate::flags::collect());
+    let resolved = crate::flags::resolve(&crate::flags::collect());
     let entry = resolved.get(PRESENT_MODE_KEY)?;
     Some((entry.source.describe(), entry.value.clone()))
 }
