@@ -102,6 +102,8 @@ void register_runtime_symbols(const std::string& path) {
         void* addr = nullptr;
         addr = x11_symbol(imp.name.c_str());
 
+        if (!addr) addr = dlsym(RTLD_DEFAULT, imp.name.c_str());
+
         if (!addr) {
             for (const auto& l : libs) {
                 if ((addr = dlsym(l.h, imp.name.c_str()))) break;
