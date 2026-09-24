@@ -19,5 +19,8 @@ pub fn hit() -> i64 {
 }
 
 pub fn report() {
-    eprintln!("[stubs] {} generic stub call(s)", HITS.load(Ordering::Relaxed));
+    eprintln!(
+        "[stubs] {} generic stub call(s)",
+        HITS.load(Ordering::Relaxed)
+    );
 }
