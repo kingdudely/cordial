@@ -1406,16 +1406,6 @@ fn main() -> ExitCode {
     cordial_runtime::identity::listen();
     cordial_runtime::identity::restore();
 
-    // Started this early, before `JNI_OnLoad`, so the AT-SPI bus connection
-    // (a D-Bus round trip) has as much time as possible to finish before the
-    // engine's first `AccessibilityManager.isEnabled()` check — the whole
-    // point of `native/accessibility.cpp` reading a plain atomic there rather
-    // than blocking on D-Bus is wasted if this is started too late for the
-    // atomic to have flipped by the time it matters. Not a hard ordering
-    // guarantee (the bridge thread and the engine's own load sequence race),
-    // but every millisecond of head start narrows that race rather than
-    // widening it.
-    cordial_runtime::android::accessibility::start();
 
     // Before the engine loads, so the governor is already up when the shader
     // compiles and the asset cache warms — the part of a launch most obviously
@@ -2540,14 +2530,6 @@ fn main() -> ExitCode {
                                                 "Java_com_roblox_client_startup_MainGameActivity_nativeSetAssetPath",
                                                 "com/roblox/client/startup/MainGameActivity",
                                                 vec![assets_now.as_str()],
-                                            ),
-                                            (
-                                                "Java_com_roblox_engine_jni_NativeSettingsInterface_nativeSetRobloxVersion",
-                                                SETTINGS,
-                                                // Read out of the binary by
-                                                // `engine_version`. See there for
-                                                // why this is no longer a literal.
-                                                vec![engine_ver.as_str()],
                                             ),
                                             (
                                                 // The engine fetches its own
