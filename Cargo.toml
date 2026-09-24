@@ -20,3 +20,14 @@ undocumented_unsafe_blocks = "warn"
 
 [profile.release]
 debug = true
+
+# Small distribution build. This leaves the debug-friendly release profile
+# untouched and provides a separate profile for the standalone runner.
+[profile.minimal]
+inherits = "release"
+opt-level = "z"
+debug = false
+strip = "symbols"
+lto = true
+codegen-units = 1
+panic = "abort"
