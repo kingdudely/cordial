@@ -9,7 +9,7 @@ license.workspace = true
 workspace = true
 
 [[bin]]
-name = "cordial-run"
+name = "roblox"
 path = "src/bin/load.rs"
 
 # Off by default for the same reason `cordial-shell/webview` is: it needs

@@ -1,4 +1,4 @@
-//! `cordial-load` — load `libroblox.so` with the bionic linker.
+//! Standalone Roblox runner. The executable, libroblox.so and assets/ live side-by-side.
 //!
 //! This does not run Roblox. It proves the loader, the relocations and the TLS
 //! layout work against the real 116 MB object, and turns
@@ -48,11 +48,11 @@ struct Options {
 }
 
 const USAGE: &str = "\
-usage: cordial-load --lib-dir <dir> [options]
+usage: roblox [options]
 
-  --lib-dir <dir>   directory holding the APK's lib/<abi>/ objects
+  --lib-dir <dir>   override the executable's directory as the library directory
   --library <name>  object to load (default: libroblox.so)
-  --apk <path>      APK to serve assets from; without it AAssetManager_open fails
+  assets/            directory beside this executable; contains content/, ssl/, android/, etc.
   --read-asset <p>  read one asset through the AAsset API and report its size
   --check-overlays  report which overlay files match nothing in this build, then exit
   --client-settings <f>  newline-free list of flag names to pre-cache.
@@ -64,7 +64,7 @@ usage: cordial-load --lib-dir <dir> [options]
   --gl-probe        bring up GLES2 through the symbol table and read a pixel back
   --window <secs>   GL PROBE ONLY: open a window and draw a gradient for <secs>.
                     This is Cordial's own test pattern, not Roblox rendering.
-  --profile <name>  which profile's storage, flags and plugin grants to run
+  --profile <name>  which profile's storage and flags to run
                     against; the one named default when this is not given.
                     One client at a time per profile, held by a lock for the
                     life of the process (ADR-012); a second is refused rather
@@ -174,9 +174,17 @@ env:
                                      long each real eglSwapBuffers call blocked
 ";
 
+fn bundle_dir() -> Result<std::path::PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("cannot find executable path: {e}"))?;
+    exe.parent()
+        .map(std::path::Path::to_path_buf)
+        .ok_or_else(|| "executable has no parent directory".to_string())
+}
+
 fn parse() -> Result<Options, String> {
+    let bundle = bundle_dir()?;
     let mut opt = Options {
-        lib_dir: String::new(),
+        lib_dir: bundle.to_string_lossy().into_owned(),
         library: "libroblox.so".into(),
         apk: None,
         profile: None,
@@ -207,7 +215,6 @@ fn parse() -> Result<Options, String> {
         match arg.as_str() {
             "--lib-dir" => opt.lib_dir = args.next().ok_or("--lib-dir needs a value")?,
             "--library" => opt.library = args.next().ok_or("--library needs a value")?,
-            "--apk" => opt.apk = Some(args.next().ok_or("--apk needs a path")?),
             // Which profile's storage this instance runs against. The profile is
             // an argument and the settings inside it are not, deliberately: one
             // value decides where everything else lives, and a setting passed on
@@ -326,30 +333,17 @@ fn parse() -> Result<Options, String> {
 /// Falls back to the APK path if extraction fails, which keeps the old
 /// behaviour rather than refusing to start over an asset folder — the loader
 /// and asset paths still work without it.
-fn asset_folder(apk: &Option<String>) -> String {
-    let Some(apk) = apk else { return String::new() };
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))
-        .unwrap_or_else(std::env::temp_dir)
-        .join("cordial/assets");
-    match cordial_runtime::android::asset::extract_to(&base) {
-        Ok(dir) => {
-            // The overlay resolver needs the *extraction root*, not the
-            // `content` subdirectory handed to the engine: overlay names are
-            // relative to `assets/`, so `content/…` is part of the name.
-            // Both routes then share one index, which they must — an overlay
-            // that applied to a texture reached through `AAssetManager` and
-            // not to the same texture reached by path would be a bug nobody
-            // would guess from the symptom (ADR-021).
-            cordial_runtime::android::asset::set_asset_root(&dir);
-            dir.join("content").to_string_lossy().into_owned()
-        }
+fn asset_folder(_apk: &Option<String>) -> String {
+    let root = match bundle_dir() {
+        Ok(dir) => dir.join("assets"),
         Err(e) => {
-            println!("  asset extraction failed ({e}); using the APK path");
-            apk.clone()
+            eprintln!("assets: {e}");
+            return String::new();
         }
-    }
+    };
+
+    cordial_runtime::android::asset::set_asset_root(&root);
+    root.join("content").to_string_lossy().into_owned()
 }
 
 /// The directory the engine runs *in*, and why it needs one of its own.
@@ -378,12 +372,6 @@ fn enter_run_dir(opt: &mut Options) {
             *p = abs.to_string_lossy().into_owned();
         }
     }
-    if let Some(apk) = opt.apk.as_mut() {
-        if let Ok(abs) = std::fs::canonicalize(&*apk) {
-            *apk = abs.to_string_lossy().into_owned();
-        }
-    }
-
     // The engine's working directory, inside whichever profile this instance was
     // given. This used to compute `instances/default` by hand while the rest of
     // the process had moved to `profiles/<name>`, which put the run directory and
@@ -401,11 +389,7 @@ fn enter_run_dir(opt: &mut Options) {
 
     // The trust store, from the APK's own copy. Linked rather than copied so a
     // re-extracted bundle is picked up without a stale duplicate.
-    let ca = std::env::var_os("XDG_CACHE_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))
-        .unwrap_or_else(std::env::temp_dir)
-        .join("cordial/assets/ssl/cacert.pem");
+    let ca = std::path::Path::new(&opt.lib_dir).join("assets/ssl/cacert.pem");
     let link_ca = |dest: std::path::PathBuf| {
         if !ca.exists() {
             return;
@@ -1285,7 +1269,7 @@ fn install_webview_presenter() {
     // `openWindow` out to a dialog; this carries a command the page issues
     // back in. It is installed here, rather than beside `webview::arm`, for
     // the reason `cordial_shell::webview::set_bridge_sink`'s doc gives:
-    // `cordial-runtime` depends on `cordial-shell` and not the reverse, so
+    // `robloxtime` depends on `cordial-shell` and not the reverse, so
     // this binary is the only place that can see both halves at once.
     //
     // Without it the shell's handler has nowhere to send an approved message
@@ -1674,35 +1658,26 @@ fn main() -> ExitCode {
     // miss into an empty path and an unhandled exception.
     cordial_runtime::android::system::install();
 
-    if let Some(apk) = &opt.apk {
-        match cordial_runtime::android::asset::set_apk(std::path::Path::new(apk)) {
-            Ok(()) => println!("assets: {apk}"),
-            Err(e) => {
-                eprintln!("bad --apk: {e}");
-                return ExitCode::FAILURE;
-            }
+    let assets = match bundle_dir() {
+        Ok(dir) => dir.join("assets"),
+        Err(e) => {
+            eprintln!("assets: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if !assets.is_dir() {
+        eprintln!("missing assets directory: {}", assets.display());
+        return ExitCode::FAILURE;
+    }
+    match cordial_runtime::android::asset::set_asset_dir(&assets) {
+        Ok(()) => println!("assets: {}", assets.display()),
+        Err(e) => {
+            eprintln!("cannot configure assets: {e}");
+            return ExitCode::FAILURE;
         }
     }
+    let _ = asset_folder(&None);
 
-    // After the APK is registered (so the CA bundle can be extracted) and before
-    // anything asks the engine to resolve a path.
-    if opt.apk.is_some() {
-        let _ = asset_folder(&opt.apk);
-        // Before the engine reads a single asset, and therefore long before
-        // `plugin_host::start_all` further down: an overlay registered after
-        // the engine has already loaded a texture cannot change it, because
-        // the bytes are cached and the engine holds a pointer into them
-        // (ADR-010's caching note). A data-only plugin has no process to
-        // register anything of its own, so this is the only point at which a
-        // texture pack can take effect at all.
-        let n = cordial_runtime::plugin_host::register_static_overlays();
-        if n > 0 {
-            println!("  {n} plugin asset overlay(s) registered");
-        }
-        if cordial_runtime::android::asset::start_watcher() {
-            println!("  overlay: watching for changes (CORDIAL_OVERLAY_WATCH)");
-        }
-    }
     enter_run_dir(&mut opt);
 
     // Answers "which of my mod's files can never apply" without starting the
@@ -1712,37 +1687,8 @@ fn main() -> ExitCode {
     // -- deliberately is not offered here, because it can only be honest after
     // a session that actually played something (ADR-021).
     if opt.check_overlays {
-        // Already registered above, with the APK, so this only reads.
-        let index = cordial_runtime::android::asset::index();
-        println!("overlay: {} file(s) across every registered layer", index.len());
-        // Named rather than guessed: if the scan cannot find a version, the
-        // report says which archive it checked against instead of inventing
-        // one. "no longer matches anything in client <something wrong>" is a
-        // worse answer than naming the file.
-        let label = cordial_runtime::android::asset::client_version()
-            .unwrap_or_else(|| opt.apk.clone().unwrap_or_else(|| "this build".into()));
-        match cordial_runtime::android::asset::apk_asset_names() {
-            Ok(apk) => {
-                let lines = cordial_runtime::android::asset::stale_report(&apk, &label);
-                if lines.is_empty() {
-                    println!("overlay: every overlay file matches something in this build");
-                }
-                for line in lines {
-                    println!("overlay: {line}");
-                }
-                for orphan in cordial_runtime::android::asset::stale(&apk) {
-                    println!("    stale  {} ({})", orphan.name, orphan.source.describe());
-                }
-            }
-            Err(e) => {
-                eprintln!("overlay: cannot read the APK's asset list ({e})");
-                return ExitCode::FAILURE;
-            }
-        }
-        for line in cordial_runtime::android::asset::shadow_report() {
-            println!("overlay: {line}");
-        }
-        return ExitCode::SUCCESS;
+        eprintln!("--check-overlays is disabled in standalone mode; assets/ is the supplied build tree");
+        return ExitCode::from(2);
     }
 
     if let Some(name) = &opt.read_asset {

@@ -110,6 +110,8 @@ impl Seek for ApkReader {
 }
 
 struct Manager {
+    /// Standalone mode serves assets directly from the supplied assets/ directory.
+    asset_root: Option<PathBuf>,
     apk: PathBuf,
     /// The archive with its central directory already parsed, cloned per read.
     ///
@@ -172,6 +174,23 @@ pub fn set_apk(path: &Path) -> Result<(), String> {
             cache: Mutex::new(HashMap::new()),
         })
         .map_err(|_| "an APK is already set".to_string())
+}
+
+pub fn set_asset_dir(path: &Path) -> Result<(), String> {
+    let root = path
+        .canonicalize()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    if !root.is_dir() {
+        return Err(format!("{} is not a directory", root.display()));
+    }
+    MANAGER
+        .set(Manager {
+            asset_root: Some(root.clone()),
+            apk: root,
+            archive: OnceLock::new(),
+            cache: Mutex::new(HashMap::new()),
+        })
+        .map_err(|_| "an asset source is already set".to_string())
 }
 
 pub fn is_configured() -> bool {
@@ -245,6 +264,38 @@ impl Manager {
                 let leaked: &'static [u8] = Vec::leak(bytes);
                 self.cache.lock().ok()?.insert(name.to_string(), leaked);
                 return Some(leaked);
+            }
+        }
+
+        if let Some(root) = &self.asset_root {
+            let relative = Path::new(name);
+            if relative.is_absolute()
+                || relative.components().any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                if trace_assets_enabled() {
+                    eprintln!("[asset] rejected path: {name}");
+                }
+                record(name, Served::Missing);
+                return None;
+            }
+            let path = root.join(relative);
+            match std::fs::read(&path) {
+                Ok(bytes) => {
+                    if trace_assets_enabled() {
+                        eprintln!("[asset] hit (directory): {name} from {}", path.display());
+                    }
+                    record(name, Served::Directory);
+                    let leaked: &'static [u8] = Vec::leak(bytes);
+                    self.cache.lock().ok()?.insert(name.to_string(), leaked);
+                    return Some(leaked);
+                }
+                Err(_) => {
+                    if trace_assets_enabled() {
+                        eprintln!("[asset] miss (directory): {name}");
+                    }
+                    record(name, Served::Missing);
+                    return None;
+                }
             }
         }
 
@@ -876,6 +927,7 @@ pub unsafe extern "C" fn cordial_overlay_resolve(
 pub enum Served {
     Overlay(OverlaySource),
     Apk,
+    Directory,
     Missing,
 }
 
@@ -1248,7 +1300,7 @@ extern "C" fn asset_manager_open(
     _mode: c_int,
 ) -> *mut c_void {
     let Some(manager) = MANAGER.get() else {
-        eprintln!("[asset] open before an APK was set — pass --apk");
+        eprintln!("[asset] open before an asset directory was set — expected ./assets beside roblox");
         return std::ptr::null_mut();
     };
     // SAFETY: the API contract is a NUL-terminated path.
