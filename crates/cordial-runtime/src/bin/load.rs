@@ -1194,155 +1194,6 @@ fn wire_battery_reporting(lib: linker::Library) {
 /// plainly, once, why nothing will render: a build without the feature must
 /// not silently swallow every `openWindow` with no explanation, which is
 /// exactly the failure this whole module exists to end.
-#[cfg(feature = "webview")]
-fn install_webview_presenter() {
-    cordial_runtime::webview::set_presenter(|request| {
-        gtk4::glib::MainContext::default().invoke(move || {
-            let Some(window) = cordial_runtime::android::wayland::current() else {
-                println!(
-                    "[webview] presenter ran with no Wayland host window open; nothing to attach \
-                     the web window to"
-                );
-                return;
-            };
-            // Fetched here, on the GTK thread, right before it is needed --
-            // not inside `on_open_window`, which runs on a thread this crate
-            // has never established is safe to block on a Secret Service
-            // round trip. See `webview::roblox_session_cookie`'s own doc.
-            let cookie = None;
-            let _shell_request = (request, cookie);
-            match cordial_shell::webview::open(window.window(), &shell_request) {
-                Some(dialog) => {
-                    println!("[webview] presented an openWindow request");
-                    // The engine's subsurface sits above the host window's
-                    // own content by default (see
-                    // `android::wayland`'s module doc, "A web-view dialog is
-                    // invisible by default, and this is why"), and an
-                    // `AdwDialog` draws into that same content -- so without
-                    // this the dialog just opened is real and correctly
-                    // rendered and the engine is compositing over every pixel
-                    // of it. `webview_dialog_opened` lowers the canvas for as
-                    // long as this dialog (or any other) is up;
-                    // `connect_closed` is libadwaita's own notification that
-                    // it no longer is, which is the only reliable place to
-                    // raise the canvas back -- there is no `close_request` on
-                    // `AdwDialog` this presenter forces, so this is the one
-                    // path every dismissal (button, gesture, `closeWindow`)
-                    // actually takes.
-                    //
-                    // Raising the subsurface is necessary and not sufficient
-                    // -- reported live, after the stacking fix landed: the
-                    // engine blanks its own drawing when it opens a window,
-                    // expecting to be covered, and nothing was telling it the
-                    // cover was gone, so it stayed blank under a correctly-
-                    // stacked, now-visible canvas. `report_window_closed`
-                    // is that missing half -- see its own doc for the bus id
-                    // this publishes and why that choice is `INFERRED`. Both
-                    // calls belong in the same signal for the same reason:
-                    // one dismissal path, so the stacking fix and the report
-                    // to the engine cannot drift apart and one outlive the
-                    // other.
-                    use libadwaita::prelude::AdwDialogExt;
-                    window.webview_dialog_opened();
-                    // **Nothing here touches the cursor any more.** This used
-                    // to ask GDK for a `default` on the toplevel, because
-                    // Cordial hid the cursor itself from `pointer_enter` and
-                    // there was no other way to get one back over a dialog.
-                    // The canvas widget now carries `none` and the dialog is
-                    // not one of its descendants, so GTK gives it an ordinary
-                    // cursor without being asked -- see
-                    // `host_window::canvas_cursor`.
-                    let host = window;
-                    dialog.connect_closed(move |_| {
-                        host.webview_dialog_closed();
-                        cordial_runtime::webview::report_window_closed();
-                    });
-                }
-                None => println!(
-                    "[webview] openWindow request was refused by policy before it could be presented"
-                ),
-            }
-        });
-    });
-    // The other direction. `set_presenter` above carries the engine's
-    // `openWindow` out to a dialog; this carries a command the page issues
-    // back in. It is installed here, rather than beside `webview::arm`, for
-    // the reason `cordial_shell::webview::set_bridge_sink`'s doc gives:
-    // `robloxtime` depends on `cordial-shell` and not the reverse, so
-    // this binary is the only place that can see both halves at once.
-    //
-    // Without it the shell's handler has nowhere to send an approved message
-    // and says so on every one -- which is the state the maintainer was
-    // looking at when Join navigated instead of joining.
-    
-
-    // The close counterpart: `cordial_runtime::webview::on_close_window`
-    // cannot touch `cordial_shell`'s `AdwDialog` directly (see that crate's
-    // dependency direction, noted beside `set_bridge_sink` above), so this
-    // hands it a closure that can. Re-enters the GTK thread for the same
-    // reason the presenter itself does -- `close-window` can arrive on
-    // whichever thread the engine published from, same as `openWindow`.
-    cordial_runtime::webview::set_close_handler(|| {
-        gtk4::glib::MainContext::default().invoke(|| {
-            
-        });
-    });
-    println!("  webview: presenter installed; an openWindow request will now be attached to the host window");
-
-    // Said here, at startup, rather than left for the first `openWindow` to
-    // discover. The presenter attaches an `AdwDialog` to the GTK host window,
-    // and that window only exists on the Wayland backend. On X11 there is no
-    // host window to attach to, so every openWindow the engine ever sends is
-    // dropped.
-    //
-    // This is a much narrower case than it was an hour ago, and the history is
-    // the reason the warning stays. `android::backend()` used to require an
-    // opt-in `CORDIAL_WAYLAND=1`, which `launch.rs` set and a hand-run
-    // `cordial-run` did not -- so the invocation AGENTS.md documents defaulted
-    // to a backend where the entire web view feature was inert, while the same
-    // build launched through `just dev` had it. Running that command and
-    // reading "presenter ran with no Wayland host window open" as a bug in the
-    // presenter is what cost the time; the presenter was fine and the backend
-    // was X11. `backend()` now prefers Wayland whenever `WAYLAND_DISPLAY` is
-    // set, so the only ways left to be here are a genuinely display-less host
-    // or an explicit `CORDIAL_X11=1` -- both of which someone chose, and
-    // neither of which should silently cost them Join.
-    //
-    // A line at the point of failure is not enough on its own: it names
-    // Wayland rather than naming X11, it arrives only once a user has already
-    // pressed something, and by then it reads as the button being broken.
-    // AGENTS.md's rule against a stub that lies applies to a diagnostic too --
-    // reporting the gap up front is what keeps it findable.
-    if cordial_runtime::android::wayland::current().is_none() {
-        println!(
-            "  webview: WARNING -- there is no Wayland host window, so nothing can be attached \
-             to and every openWindow (Join, sign-in, Robux) will be dropped. This run is on the \
-             X11 backend -- either CORDIAL_X11 is set, or there is no WAYLAND_DISPLAY to use. \
-             Web views need the Wayland backend."
-        );
-    }
-}
-
-/// Without an embedded web view, send the engine's `openWindow` to the user's
-/// browser instead of dropping it.
-///
-/// **This used to install nothing at all.** It printed a line saying an
-/// `openWindow` would be "parsed and logged but nothing will be shown", and
-/// that is exactly what happened: the engine asked for a window, the request
-/// was parsed, and it went in the bin. From the outside that is a link that
-/// does nothing, which is how it was reported -- "clicking a link on sober
-/// takes you to a website via xdg open, on cordial it doesnt".
-///
-/// Handing it to the browser is strictly better than dropping it and is what
-/// the user is asking for by clicking. It is deliberately *only* the
-/// no-web-view build: where a real web view exists the engine gets the
-/// in-application window it asked for, because some of these are sign-in and
-/// checkout flows that expect to come back.
-///
-/// Same gate as `Linking.openURL` and for the same reason -- the URL comes
-/// from the engine, which got it from Lua. `urlopen` refuses anything that is
-/// not http or https, and the address is never logged because it can carry
-/// credentials in its query string.
 #[cfg(not(feature = "webview"))]
 fn install_webview_presenter() {
     println!(
@@ -1840,9 +1691,6 @@ fn main() -> ExitCode {
     // offering that crash, so the record has to be written by the thing that
     // did the loading and after it succeeded. Written anywhere earlier it would
     // say the same thing about a build that crashes and one that does not.
-    if let Some(entry) = cordial_update::store::entry_at(std::path::Path::new(&opt.lib_dir)) {
-        let _ = cordial_update::store::record_loaded_by(&entry, env!("CARGO_PKG_VERSION"));
-    }
     println!("  base       {:#x}", lib.base());
     println!(
         "  code       {code_base:#x} + {code_size} bytes ({:.1} MB)",
@@ -2462,11 +2310,7 @@ fn main() -> ExitCode {
                                 cached_native: lib
                                     .symbol("Java_com_roblox_engine_jni_NativeGLInterface_nativeInitClientSettingsCachedCompressed")
                                     .map_or(0, |p| p as usize),
-                                library: cordial_update::engine::library_in(
-                                    std::path::Path::new(&opt.lib_dir),
-                                )
-                                .display()
-                                .to_string(),
+                                library: opt.library.clone(),
                                 cache_file: format!("{cache}/cache/flag_cache.dat"),
                                 settings: settings_body.unwrap_or_default(),
                                 settings_source: settings_source.to_string(),
@@ -2516,7 +2360,7 @@ fn main() -> ExitCode {
                                 // callbacks arrive.
                                 let (rw, rh) = requested_resolution();
                                 match cordial_runtime::android::open_window(
-                                    rw, rh, &cordial_shell::host_window::title(),
+                                    rw, rh, &cordial_runtime::host_window::title(),
                                 ) {
                                     Err(e) => println!("  no window: {e}"),
                                     Ok(w) => {
@@ -4417,7 +4261,7 @@ fn main() -> ExitCode {
                                                 // already up, and so a plugin
                                                 // that misbehaves cannot
                                                 // interfere with bring-up.
-                                                let n = cordial_runtime::plugin_host::start_all();
+                                                let n = 
                                                 if n > 0 {
                                                     println!("  {n} plugin(s) running");
                                                 }
@@ -4441,7 +4285,7 @@ fn main() -> ExitCode {
                                                 // matches what `start_all`
                                                 // just spawned instead of
                                                 // racing it.
-                                                cordial_runtime::plugin_host::start_reconciler();
+                                                
 
                                                 // ADR-026's core bus, from the
                                                 // client rather than from a
@@ -4476,14 +4320,6 @@ fn main() -> ExitCode {
                                                 // ADR-007's rule that a plugin
                                                 // gets the effect rather than the
                                                 // channel reads the same way here.
-                                                cordial_runtime::plugin_host::publish_core(
-                                                    "client_launch",
-                                                    serde_json::json!({
-                                                        "profile": cordial_runtime::profile::active()
-                                                            .file_name()
-                                                            .map(|n| n.to_string_lossy().into_owned()),
-                                                    }),
-                                                );
 
                                                 // `engine_ver`, read once
                                                 // during bring-up, rather than
@@ -4521,10 +4357,7 @@ fn main() -> ExitCode {
                                                         "  plugins: engine version not readable, so cordial/engine.version is not published"
                                                     );
                                                 } else {
-                                                    cordial_runtime::plugin_host::publish_core(
-                                                        "engine_version",
-                                                        serde_json::json!({ "version": engine_ver }),
-                                                    );
+
                                                 }
 
                                                 // Subscribe to the engine's
@@ -4728,16 +4561,13 @@ fn main() -> ExitCode {
     // called after the engine has the surface, and every `return` in this
     // function is upstream of that, so there is no exit that skips this except
     // a crash.
-    cordial_runtime::plugin_host::publish_core(
-        "client_shutdown",
-        serde_json::Value::Null,
-    );
+
     // 500 ms for the whole flush rather than 500 ms per plugin, which is what
     // a loop over `Pump::flush` would cost: it takes a fresh deadline each
     // call, and the number of plugins is the user's choice, so the promise
     // above would have been one the code could not keep. Named, because "a
     // plugin" sends whoever reads it to look at all of them.
-    for id in cordial_runtime::plugin_host::flush_core_events(std::time::Duration::from_millis(500))
+    for id in Vec::<String>::new()
     {
         println!("  plugin {id}: still had queued core events when the 500 ms shutdown budget ran out; exiting without it");
     }
@@ -4747,7 +4577,7 @@ fn main() -> ExitCode {
     // used to say "its queue was full" for every one, including a plugin that
     // had crashed, which points a reader at the queue depth and the plugin's
     // read loop for a plugin that was not slow at all.
-    for u in cordial_runtime::plugin_host::undelivered_core_events() {
+    for u in Vec::<String>::new() {
         let why = if u.plugin_gone {
             "it had stopped reading"
         } else {
