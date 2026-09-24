@@ -2622,6 +2622,7 @@ fn main() -> ExitCode {
                                                 "com/roblox/client/startup/MainGameActivity",
                                                 vec![assets_now.as_str()],
                                             ),
+                                            (
                                                 "Java_com_roblox_engine_jni_NativeSettingsInterface_nativeSetRobloxVersion",
                                                 SETTINGS,
                                                 vec![engine_ver.as_str()],
