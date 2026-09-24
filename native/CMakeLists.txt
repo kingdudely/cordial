@@ -337,6 +337,5 @@ target_include_directories(cordial_permissions_transport_test PRIVATE
 add_custom_command(TARGET cordial_permissions_transport_test POST_BUILD
   COMMAND cordial_permissions_transport_test
   COMMENT "Running PermissionsProtocol response transport checks")
-add_dependencies(cordial_jni_shim cordial_permissions_transport_test)
 
 install(TARGETS cordial_jni_shim jnivm logger ARCHIVE DESTINATION lib)
