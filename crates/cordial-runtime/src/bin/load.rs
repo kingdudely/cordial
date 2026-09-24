@@ -1529,11 +1529,8 @@ fn main() -> ExitCode {
     // of this log should see the choice before its consequence.
     cordial_runtime::bionic::announce_audio_backend();
 
-    // Ask the engine what it imports rather than trusting the checked-in list.
-    // `docs/analysis/undefined-symbols.tsv` still generates the stubs, but it is
-    // no longer the gate: a Roblox update that adds an ordinary libc import used
-    // to stop the client loading until somebody regenerated that file, which
-    // happened for `hypotf` and again for `getpwuid_r`. Issue #15.
+    // Ask the engine what it imports. The current ELF is the source of truth;
+    // no checked-in stub inventory participates in the build path.
     let (imports, unreadable) =
         cordial_runtime::elf::undefined_symbols_in_dir(std::path::Path::new(&opt.lib_dir));
     for (path, why) in &unreadable {
@@ -1566,13 +1563,16 @@ fn main() -> ExitCode {
         println!("  warning: host {missing} unavailable; its symbols are stubbed");
     }
 
-    // Both of these are empty on a build whose imports the checked-in list
-    // already covers, so anything printed here is news.
-    for (symbol, library) in &table.beyond_stub_table {
+    if !table.stubbed.is_empty() {
         println!(
-            "  note: {symbol} is not in docs/analysis/undefined-symbols.tsv; \
-             resolved from the host under {library}"
+            "  generic runtime stubs: {} imported symbols",
+            table.stubbed.len()
         );
+        if opt.verbose {
+            for symbol in &table.stubbed {
+                println!("    stub {symbol}");
+            }
+        }
     }
     if !table.unprovidable.is_empty() {
         let strong = table
