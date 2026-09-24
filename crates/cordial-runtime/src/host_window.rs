@@ -1,9 +1,7 @@
-//! Minimal GTK/libadwaita host window for the standalone Roblox runtime.
+//! Minimal GTK host window for the standalone Roblox runtime.
 use gdk4_wayland::prelude::*;
-use libadwaita as adw;
-use libadwaita::glib;
-use libadwaita::gtk;
-use libadwaita::prelude::*;
+use gtk4::{self as gtk, glib};
+use gtk4::prelude::*;
 use std::ffi::c_void;
 use std::time::{Duration, Instant};
 
@@ -151,7 +149,7 @@ pub fn init_wayland() -> Result<(), String> {
     }
     gtk::gdk::set_allowed_backends("wayland");
     glib::set_prgname(Some(APP_ID));
-    adw::init().map_err(|e| format!("libadwaita would not initialise: {e}"))?;
+    gtk::init().map_err(|e| format!("GTK would not initialise: {e}"))?;
     unmute_waylands_own_errors();
     Ok(())
 }
@@ -214,9 +212,9 @@ fn unmute_waylands_own_errors() {
 /// `Send`/`Sync` and it must not be made so; the runtime keeps its copy behind
 /// a wrapper whose own comment names the same rule.
 pub struct HostWindow {
-    window: adw::Window,
-    header: adw::HeaderBar,
-    toolbar: adw::ToolbarView,
+    window: gtk::Window,
+    header: gtk::HeaderBar,
+    toolbar: gtk::Box,
     /// The widget the content occupies. Its allocation — not the window's — is
     /// what the engine's subsurface is sized and positioned from, so that the
     /// header bar's height never has to be assumed anywhere.
@@ -543,8 +541,6 @@ impl HostWindow {
         // hole. What it must not do is imply the line below is load-bearing.
         canvas.set_cursor_from_name(canvas_cursor());
         let host = Self::new(title, width, height + chrome_height, &canvas);
-        host.toolbar.set_reveal_top_bars(true);
-
         // Hide the header bar while fullscreen. Restore it afterwards only
         // when the saved preference has not hidden windowed chrome too.
         //
@@ -560,9 +556,9 @@ impl HostWindow {
         // ToolbarView owns the space it occupies: hiding the child leaves the
         // gap it was sitting in.
         {
-            let toolbar_for_fs = host.toolbar.clone();
+            let header_for_fs = host.header.clone();
             host.window.connect_fullscreened_notify(move |w| {
-                toolbar_for_fs.set_reveal_top_bars(!w.is_fullscreen());
+                header_for_fs.set_visible(!w.is_fullscreen());
                 // Leaving fullscreen left the bar missing until the app menu
                 // was opened and closed. The reveal alone need not reach the
                 // compositor: GSK can judge a fullscreen-transition frame
@@ -685,9 +681,9 @@ impl HostWindow {
     }
 
     pub fn new(title: &str, width: i32, height: i32, content: &impl IsA<gtk::Widget>) -> Self {
-        let header = adw::HeaderBar::new();
-        let toolbar = adw::ToolbarView::new();
-        toolbar.add_top_bar(&header);
+        let header = gtk::HeaderBar::new();
+        let toolbar = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        toolbar.append(&header);
         let overlay = gtk::Overlay::new();
         overlay.set_child(Some(content));
         let text_layer = gtk::Fixed::new();
@@ -765,7 +761,7 @@ impl HostWindow {
         text_layer.put(&editor, 0.0, 0.0);
 
         overlay.add_overlay(&text_layer);
-        toolbar.set_content(Some(&overlay));
+        toolbar.append(&overlay);
 
         // Clamped before the window exists, because a default size larger than
         // the screen is not something the compositor will correct for you: it
@@ -778,11 +774,11 @@ impl HostWindow {
             None => (width, height),
         };
 
-        let window = adw::Window::builder()
+        let window = gtk::Window::builder()
             .title(title)
             .default_width(w)
             .default_height(h)
-            .content(&toolbar)
+            .child(&toolbar)
             .build();
 
         HostWindow {
@@ -804,15 +800,15 @@ impl HostWindow {
         }
     }
 
-    pub fn window(&self) -> &adw::Window {
+    pub fn window(&self) -> &gtk::Window {
         &self.window
     }
 
-    pub fn header(&self) -> &adw::HeaderBar {
+    pub fn header(&self) -> &gtk::HeaderBar {
         &self.header
     }
 
-    pub fn toolbar(&self) -> &adw::ToolbarView {
+    pub fn toolbar(&self) -> &gtk::Box {
         &self.toolbar
     }
 
