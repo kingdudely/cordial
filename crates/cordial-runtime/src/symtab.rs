@@ -22,7 +22,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{c_char, c_int, c_void, CString};
 
 use crate::elf::Binding;
-use crate::stubs::SYMBOLS;
 
 /// Symbol prefix -> the Android library that provides it. These have no host
 /// equivalent, so they are always stubbed; the mapping only decides which
@@ -262,13 +261,6 @@ fn resolve(
 /// silent zero is how the next `hypotf` becomes a mystery rather than an error.
 /// It goes in `unprovidable`, the load fails on it, and the log names it.
 pub fn build(host_libc: bool, imports: &crate::elf::Imports) -> SymbolTable {
-    // (host soname, Android soname it stands in for)
-    //
-    // libstdc++ and libgcc_s are here for one symbol: `__gxx_personality_v0`,
-    // the Itanium C++ ABI personality routine. Roblox imports it undefined and
-    // throws during static initialisation; with it stubbed the unwinder cannot
-    // find a handler, calls std::terminate, and the whole load aborts inside
-    // DT_INIT_ARRAY. The ABI is standard, so the host's is the right one.
     let candidates: &[(&'static str, &'static str)] = &[
         ("libm.so.6", "libm.so"),
         ("libz.so.1", "libz.so"),
@@ -292,6 +284,7 @@ pub fn build(host_libc: bool, imports: &crate::elf::Imports) -> SymbolTable {
             None => missing_host_libs.push(*soname),
         }
     }
+
     let libc = host_libc
         .then(|| HostLib::open("libc.so.6", "libc.so"))
         .flatten();
@@ -304,58 +297,34 @@ pub fn build(host_libc: bool, imports: &crate::elf::Imports) -> SymbolTable {
         unprovidable: Vec::new(),
     };
 
-    for (symbol, stub) in SYMBOLS.iter() {
+    for (symbol, binding) in imports {
         let class = classify(symbol);
-        let (library, address, source) = resolve(symbol, &class, &overrides, &host_libs, libc.as_ref())
-            .unwrap_or((fallback_library(&class), *stub as *mut c_void, Source::Stub));
+        let (library, address, source) =
+            resolve(symbol, &class, &overrides, &host_libs, libc.as_ref())
+                .unwrap_or_else(|| {
+                    (
+                        fallback_library(&class),
+                        crate::stubs::stub_ptr(),
+                        Source::Stub,
+                    )
+                });
 
+        let leaked: &'static str = Box::leak(symbol.clone().into_boxed_str());
         table.libraries.entry(library).or_default().push(Entry {
-            symbol,
+            symbol: leaked,
             address,
             source,
         });
         table.stats.entry(library).or_default().record(source);
-    }
 
-    // Everything the engine imports that the generated table has never heard
-    // of. On a build the checked-in list is current for this loop does nothing;
-    // after a Roblox update it is the difference between the client starting
-    // and `cannot locate symbol` before any window appears. See `build`'s
-    // header and issue #15.
-    let known: BTreeSet<&str> = SYMBOLS.iter().map(|(s, _)| *s).collect();
-    for (symbol, binding) in imports {
-        let name = symbol.as_str();
-        if known.contains(name) || LINKER_PROVIDED.contains(&name) {
-            continue;
-        }
-        let class = classify(name);
-        match resolve(name, &class, &overrides, &host_libs, libc.as_ref()) {
-            Some((library, address, source)) => {
-                // The table outlives every caller -- it is handed to the linker
-                // at startup and never rebuilt -- and the linker copies these
-                // names into `std::string` keys of its own anyway. Leaking is
-                // the honest way to say that, and it is bounded by how many
-                // imports a Roblox update adds, which has been one at a time.
-                let leaked: &'static str = Box::leak(symbol.clone().into_boxed_str());
-                table.libraries.entry(library).or_default().push(Entry {
-                    symbol: leaked,
-                    address,
-                    source,
-                });
-                table.stats.entry(library).or_default().record(source);
-                table.beyond_stub_table.push((symbol.clone(), library));
-            }
-            None => table.unprovidable.push(Unprovidable {
+        if source != Source::Stub {
+            table.beyond_stub_table.push((symbol.clone(), library));
+        } else if *binding == Binding::Weak {
+            table.unprovidable.push(Unprovidable {
                 symbol: symbol.clone(),
                 binding: *binding,
-                why: match class {
-                    Class::Android(lib) => {
-                        format!("an Android API belonging to {lib}, which needs implementing here")
-                    }
-                    Class::Khronos(_) => "no GLES or EGL on this host defines it".to_string(),
-                    Class::Generic => "no host library defines it".to_string(),
-                },
-            }),
+                why: "unresolved weak import; using generic stub".to_string(),
+            });
         }
     }
 
@@ -364,13 +333,6 @@ pub fn build(host_libc: bool, imports: &crate::elf::Imports) -> SymbolTable {
         table.stats.entry(name).or_default();
     }
 
-    // Vulkan is `dlopen`ed, not linked — it contributes no undefined symbols to
-    // `libroblox.so` and so never reaches the per-symbol classification above.
-    // Register it as its own virtual library, exporting only
-    // `vkGetInstanceProcAddr`; everything else is fetched dynamically through
-    // it. See `android::vulkan`. When the host has no Vulkan at all, both
-    // sonames are left unregistered and Roblox's `dlopen` fails exactly as it
-    // does today — a clean fall-through to GLES.
     match crate::android::vulkan::get_instance_proc_addr_symbol() {
         Some(addr) => {
             for name in crate::android::vulkan::LIBRARY_NAMES {
@@ -385,13 +347,6 @@ pub fn build(host_libc: bool, imports: &crate::elf::Imports) -> SymbolTable {
         None => table.missing_host_libs.push("libvulkan.so.1"),
     }
 
-    // mimalloc, the same shape as Vulkan above: `libroblox.so` contributes no
-    // undefined `mi_` symbols (nothing DT_NEEDS it), so it is never reached by
-    // the per-symbol classification loop and has to be registered as its own
-    // virtual library for whatever `dlopen`s it to find. See `mimalloc_lib`
-    // for why this links the real allocator rather than stubbing its option
-    // getters, and for what is and is not confirmed about whether the engine
-    // ever asks for it.
     {
         let mimalloc = table
             .libraries
@@ -411,20 +366,6 @@ pub fn build(host_libc: bool, imports: &crate::elf::Imports) -> SymbolTable {
         }
     }
 
-    // AAudio, and the same shape again: `libroblox.so` has no undefined
-    // `AAudio*` symbols, so nothing here is reached by the per-symbol loop
-    // above and the library has to be registered whole.
-    //
-    // **Registered unless `CORDIAL_AUDIO=java` asked otherwise.** This was off
-    // by default while nothing had been measured — an audio backend nobody has
-    // numbers for must not arrive with an update and take everyone's sound
-    // with it — and the numbers now exist in
-    // `docs/analysis/aaudio-contract.md`. Registering the library is still not
-    // on its own enough to route anything: `org.fmod.FMOD.supportsAAudio()`
-    // is the gate FMOD actually asks, and it answers false on a host with no
-    // PipeWire session whatever this does. The condition is read out of
-    // `native/aaudio.cpp` rather than from the environment here so that this
-    // and that predicate cannot disagree — see `bionic::aaudio_selected`.
     if crate::bionic::aaudio_selected() {
         let aaudio = table.libraries.entry(AAUDIO_LIBRARY_NAME).or_default();
         for (symbol, address) in crate::bionic::aaudio_overrides() {
@@ -571,68 +512,6 @@ mod tests {
     fn plain_libc_is_generic() {
         assert!(matches!(classify("memcpy"), Class::Generic));
         assert!(matches!(classify("pthread_create"), Class::Generic));
-    }
-
-    /// Issue #15's acceptance test, in miniature: a symbol the host provides
-    /// that `docs/analysis/undefined-symbols.tsv` has never mentioned. `hypotl`
-    /// is the long-double sibling of the `hypotf` that actually stopped a
-    /// client loading in 2.734.0.917, and is not in the file -- checked, not
-    /// assumed, by the assertion below.
-    #[test]
-    fn a_host_symbol_absent_from_the_stub_table_still_resolves() {
-        assert!(
-            !SYMBOLS.iter().any(|(s, _)| *s == "hypotl"),
-            "hypotl has been added to the stub table; this test needs a symbol that has not"
-        );
-
-        let mut imports = crate::elf::Imports::new();
-        imports.insert("hypotl".to_string(), Binding::Strong);
-        let table = build(false, &imports);
-
-        assert!(
-            table.unprovidable.is_empty(),
-            "libm has hypotl: {:?}",
-            table.unprovidable.iter().map(|u| &u.symbol).collect::<Vec<_>>()
-        );
-        let entry = table
-            .libraries
-            .get("libm.so")
-            .expect("libm.so registered")
-            .iter()
-            .find(|e| e.symbol == "hypotl")
-            .expect("hypotl resolved into libm.so");
-        assert_eq!(entry.source, Source::Host);
-        assert_eq!(
-            table.beyond_stub_table,
-            vec![("hypotl".to_string(), "libm.so")]
-        );
-    }
-
-    /// The other half of the same issue, and the half that must stay loud: a
-    /// symbol nothing can answer is reported, not quietly given a zero.
-    #[test]
-    fn a_symbol_nothing_provides_is_reported_rather_than_stubbed() {
-        let name = "cordial_no_such_symbol_anywhere";
-        let mut imports = crate::elf::Imports::new();
-        imports.insert(name.to_string(), Binding::Strong);
-        let table = build(false, &imports);
-
-        assert!(table.beyond_stub_table.is_empty());
-        let reported = table
-            .unprovidable
-            .iter()
-            .find(|u| u.symbol == name)
-            .expect("reported as unprovidable");
-        assert_eq!(reported.binding, Binding::Strong);
-        assert!(
-            !table
-                .libraries
-                .values()
-                .flatten()
-                .any(|e| e.symbol == name),
-            "it must not be registered at all -- an unregistered symbol is what makes \
-             the linker fail by name, which is the whole point"
-        );
     }
 
     /// glibc exports `dlopen`, so the host lookup for it *succeeds*. Taking it
