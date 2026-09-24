@@ -5,6 +5,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+find_package(X11 REQUIRED)
+
 add_subdirectory(native)
 
 add_executable(roblox
@@ -32,6 +34,8 @@ target_link_libraries(roblox PRIVATE
   m
   stdc++
 )
+
+target_link_libraries(roblox PRIVATE X11::X11)
 
 target_link_options(roblox PRIVATE
   -Wl,--export-dynamic
