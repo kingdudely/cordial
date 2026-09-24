@@ -9,6 +9,7 @@
 #include <iterator>
 #include <string>
 #include <thread>
+#include <cstdlib>
 #include <chrono>
 
 extern "C" {
@@ -26,6 +27,8 @@ int cordial_game_activity_start(long,int,int,int,char*,size_t);
 
 void cordial_set_ui_mode_night(int);
 void cordial_set_display_size(int,int);
+int cordial_set_init_params(void*,const char*,int,int,char*,size_t);
+int cordial_asset_manager_init(void*,char*,size_t);
 
 int cordial_init_client_settings(void*,const char*,const char*,const char*,char*,size_t);
 int cordial_init_flags(void*,const char*,char*,size_t);
@@ -122,6 +125,14 @@ int main(int argc,char** argv) {
 
     cordial_set_bootstrap(bootstrap);
 
+    // Android framework initialization that normally happens before the first
+    // surface is created.
+    if (void* p=cordial_linker_dlsym(
+        library_handle,"Java_com_roblox_client_JNIAAssetManagerSetup_initNative")) {
+        cordial_asset_manager_init(p,err,sizeof(err));
+        if (*err) std::fprintf(stderr,"[cordial] asset manager: %s\\n",err);
+    }
+
     void* init=cordial_linker_dlsym(
         library_handle,"Java_com_google_androidgamesdk_GameActivity_initializeNativeCode");
     if(!init) {
@@ -143,6 +154,11 @@ int main(int argc,char** argv) {
     if(!cordial::open_host_window(width,height,"Roblox")) return 1;
 
     cordial_set_display_size(width,height);
+    if (void* p=cordial_linker_dlsym(
+        library_handle,"Java_com_roblox_client_startup_MainGameActivity_nativeAppBridgeSetInitParams")) {
+        cordial_set_init_params(p,assets.c_str(),width,height,err,sizeof(err));
+        if (*err) std::fprintf(stderr,"[cordial] init params: %s\\n",err);
+    }
     if(cordial_game_activity_start(handle,width,height,1,err,sizeof(err))<0) {
         std::fprintf(stderr,"[cordial] GameActivity start failed: %s\n",*err?err:"unknown");
         return 1;
