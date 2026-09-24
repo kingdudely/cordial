@@ -80,16 +80,6 @@ pub const AAUDIO_LIBRARY_NAME: &str = "libaaudio.so";
 /// have never been in `SYMBOLS`. The list is repeated here rather than shared
 /// because a build script cannot import from the crate it builds; if one
 /// changes, change both.
-const LINKER_PROVIDED: &[&str] = &[
-    "dlopen",
-    "dlsym",
-    "dlclose",
-    "dlerror",
-    "dladdr",
-    "dl_iterate_phdr",
-    "dlvsym",
-];
-
 /// In `libroblox.so`'s `DT_NEEDED` but contributing no undefined symbols — they
 /// are consulted via `dlsym` at runtime, if at all. They still have to exist for
 /// the `DT_NEEDED` walk to succeed.
