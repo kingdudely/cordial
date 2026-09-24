@@ -28,7 +28,6 @@ struct Options {
     assets: String,
     lib_dir: String,
     library: String,
-    apk: Option<String>,
     /// The `--profile` name, kept as well as resolved. `parse` hands the
     /// directory to `profile::set_active` immediately, but `main` has to claim
     /// the profile by name — see [`claim_profile`] — and re-deriving the name
@@ -50,7 +49,7 @@ struct Options {
 }
 
 const USAGE: &str = "\
-usage: roblox [options]
+usage: roblox [options] [roblox-player:... | roblox://...]
 
   --libroblox <f>   path to libroblox.so (default: ./libroblox.so)
   --assets <dir>    path to the assets directory (default: ./assets)
@@ -76,16 +75,16 @@ usage: roblox [options]
                     rather than falling back to a visible window if cage is
                     missing. Pair with CORDIAL_DEV_CONTROL=1 or nothing can see
                     the client at all
-  --host-libc       also resolve libc from the host (ABI-unsafe; diagnostic only)
-  --jni-onload      stand up a JavaVM and call JNI_OnLoad
-  --game-activity   implies --jni-onload; bring Roblox up and hand it a surface
+  --host-libc       compatibility flag; host libc is already the default
+  --jni-onload      compatibility flag; the normal launch already does this
+  --game-activity   compatibility flag; the normal launch already does this
   --join-url <url>  a roblox-player:// or roblox:// link from a browser click,
                     handed to the engine during bring-up. Rejected unless it is
                     one of those two schemes, printable ASCII, and under 2 kB.
                     A roblox-player: link in the desktop launcher's format is
                     rewritten into the roblox:// form this engine matches; its
                     one-time gameinfo ticket is dropped and never printed
-  --run <secs>      how long to let Roblox run after handover (default 15).
+  --run <secs>      limit runtime after handover (default: unlimited; 0 = unlimited).
                     0 means no timer: run until the window is closed or the
                     process is sent SIGTERM/SIGINT. Closing the window ends the
                     process either way — the timer is a backstop for headless
@@ -177,7 +176,6 @@ fn parse() -> Result<Options, String> {
         assets: "./assets".into(),
         lib_dir: String::new(),
         library: String::new(),
-        apk: None,
         profile: None,
         read_asset: None,
         check_overlays: false,
@@ -188,7 +186,7 @@ fn parse() -> Result<Options, String> {
         game_activity: false,
         join_url: None,
         run_seconds: 15,
-        host_libc: false,
+        host_libc: true,
         jni_onload: false,
         dump_classes: None,
         verbose: false,
@@ -201,6 +199,7 @@ fn parse() -> Result<Options, String> {
     // like the session being dropped. This is a no-op once the move has happened.
     cordial_runtime::profile::migrate_legacy_layout();
 
+    let mut run_specified = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -257,6 +256,7 @@ fn parse() -> Result<Options, String> {
             "--run" => {
                 let v = args.next().ok_or("--run needs a duration in seconds")?;
                 opt.run_seconds = v.parse().map_err(|_| "--run wants a number")?;
+                run_specified = true;
             }
             "--game-activity" => {
                 opt.jni_onload = true;
@@ -282,11 +282,39 @@ fn parse() -> Result<Options, String> {
             }
             "-v" | "--verbose" => opt.verbose = true,
             "-h" | "--help" => return Err(String::new()),
+            other if is_roblox_uri(other) && opt.join_url.is_none() => {
+                opt.join_url = Some(cordial_runtime::deeplink::validate(other)?);
+                cordial_runtime::android::looper::note_join_requested();
+            }
             other => return Err(format!("unrecognised argument: {other}")),
         }
     }
+
+    // A plain roblox invocation is the normal desktop launch. Diagnostic-only
+    // modes retain their old non-game-activity behaviour, and --jni-onload by
+    // itself remains the raw JNI probe it was before.
+    let diagnostic_only = opt.read_asset.is_some()
+        || opt.check_overlays
+        || opt.gl_probe
+        || opt.window_seconds.is_some()
+        || opt.dump_classes.is_some();
+    if !diagnostic_only && !(opt.jni_onload && !opt.game_activity) {
+        opt.game_activity = true;
+        opt.jni_onload = true;
+    }
+    if opt.game_activity && !run_specified {
+        opt.run_seconds = 0;
+    }
+
     derive_engine_paths(&mut opt)?;
     Ok(opt)
+}
+
+fn is_roblox_uri(raw: &str) -> bool {
+    let Some((scheme, _)) = raw.split_once(':') else {
+        return false;
+    };
+    scheme.eq_ignore_ascii_case("roblox") || scheme.eq_ignore_ascii_case("roblox-player")
 }
 
 /// Derive the linker's search directory and soname from the explicit
