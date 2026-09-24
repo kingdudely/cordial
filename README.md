@@ -36,8 +36,14 @@ build/
 
 It does not download an APK at launch. It uses the supplied `libroblox.so` and reads the supplied `assets/` directory directly.
 
-Build:
+Build a debug-friendly binary:
 
 ```bash
 cargo build --release --bin roblox
+```
+
+Build a smaller distribution binary:
+
+```bash
+cargo build --profile minimal --bin roblox
 ```
