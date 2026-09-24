@@ -104,7 +104,7 @@ extern "C" fn len(asset: *mut c_void) -> i64 {
     if asset.is_null() {
         0
     } else {
-        unsafe { (*(asset as *const Asset)).bytes.len() as i64 }
+        unsafe { (&(*(asset as *const Asset)).bytes).len() as i64 }
     }
 }
 
