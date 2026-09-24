@@ -379,8 +379,6 @@ fn enter_run_dir(opt: &mut Options) {
     // The development control socket, if this run asked for one. Started here
     // because `profile::active()` has latched by now, and the socket belongs
     // inside the profile so ADR-012's one-instance lock already covers it.
-    cordial_runtime::devctl::start();
-
     let root = cordial_runtime::profile::active().join("run");
     if let Err(e) = std::fs::create_dir_all(root.join("exe")) {
         println!("  could not create {}: {e}", root.display());
@@ -1174,72 +1172,6 @@ fn wire_battery_reporting(lib: linker::Library) {
     });
 }
 
-/// Install what `cordial_runtime::webview::on_open_window` hands a parsed
-/// request to, so an `openWindow` message actually opens something instead of
-/// only being logged.
-///
-/// Called once, right after `webview::arm`, from the same thread that owns
-/// GTK's `MainContext` -- the looper thread, which is where every other GTK
-/// call this file makes already happens. That matters for *this* call, the
-/// one that registers the closure, but not for the closure's own body: the
-/// engine can publish `openWindow` from any of its own threads (see
-/// `webview::on_open_window`'s doc), so the closure re-enters the GTK thread
-/// itself on every call, via `MainContext::default().invoke`, rather than
-/// assuming it is already there.
-///
-/// `#[cfg(feature = "webview")]` because the closure's body ends in
-/// `cordial_shell::webview::open`, an actual `WebKitWebView` -- see that
-/// feature's own comment in `Cargo.toml`. The `#[cfg(not(...))]` twin below
-/// keeps the call site at the top of this function unconditional and says
-/// plainly, once, why nothing will render: a build without the feature must
-/// not silently swallow every `openWindow` with no explanation, which is
-/// exactly the failure this whole module exists to end.
-#[cfg(not(feature = "webview"))]
-fn install_webview_presenter() {
-    println!(
-        "  webview: built without the `webview` feature (needs webkitgtk6.0-devel); \
-         openWindow will open in your browser instead of an in-app window -- see \
-         `just build toolbox` for the embedded one"
-    );
-    cordial_runtime::webview::set_presenter(|request| {
-        match std::process::Command::new("xdg-open").arg(&request.url).spawn() {
-            Ok(_) => println!("  webview: openWindow handed to the browser"),
-            Err(e) => println!("  webview: openWindow could not be opened: {e}"),
-        }
-    });
-    // There is no dialog for a `closeWindow` message to close -- `openWindow`
-    // went to the user's own browser, a tab this process has no handle to and
-    // no business closing. Said plainly rather than left silent, the same
-    // reason the presenter above prints instead of just opening.
-    cordial_runtime::webview::set_close_handler(|| {
-        println!(
-            "  webview: closeWindow arrived, but this build has no in-app window to close -- \
-             openWindow already went to your browser"
-        );
-    });
-}
-
-/// The engine's own version, read out of `libroblox.so` rather than hardcoded.
-///
-/// This existed as a hardcoded `"2.732.0.1043"` with a comment claiming it was
-/// "the engine's own answer rather than a guess". It was neither: the engine in
-/// the APK on this machine is **2.730.0.790**, which is what it stamps on every
-/// log file it writes, so Cordial was telling the server one version while the
-/// client was another. A build that misreports its own version is exactly the
-/// shape of thing a server-side check rejects, and the value had gone stale
-/// silently across an APK update with nothing to catch it.
-///
-/// The scan itself moved to [`cordial_update::engine`]. It was thirty lines
-/// here, in a binary, which meant the updater could not call it and had to
-/// report that it did not know which build was installed — while this function
-/// printed the answer at every launch. One copy, in the crate that compares it
-/// against what Roblox has published; the rules are unchanged, including
-/// returning `None` when the four-part shape is not unique, because skipping
-/// the call is honest and inventing a version is what caused the bug above.
-fn engine_version(lib_dir: &str) -> Option<String> {
-    None
-}
-
 // `native/local_storage.cpp`'s two exported callers. Declared directly here
 // rather than through `cordial_linker_sys::game_activity` -- that module is
 // the usual home for a wrapper like this, and it was off limits to the task
@@ -1492,8 +1424,6 @@ fn main() -> ExitCode {
     // Before the engine loads, so the governor is already up when the shader
     // compiles and the asset cache warms — the part of a launch most obviously
     // bound by a CPU that has not been asked to hurry yet.
-    gamemode::register();
-
     // Before the table is built, because `symtab::build` consults the same
     // selection to decide whether `libaaudio.so` exists at all, and a reader
     // of this log should see the choice before its consequence.
@@ -2801,57 +2731,6 @@ fn main() -> ExitCode {
                                                     Err(e) => println!("  {name} failed: {e}"),
                                                 },
                                             }
-                                        }
-
-                                        // `setWebviewUserAgent`, told the
-                                        // same string `InitParams.userAgent`
-                                        // just above was built with --
-                                        // `cordial_runtime::webview::user_agent`
-                                        // reads it back out of
-                                        // `native/init_params.cpp`'s
-                                        // `build_user_agent` rather than
-                                        // recomputing it, so the engine and
-                                        // the desktop web view
-                                        // (`cordial_shell::webview::open`,
-                                        // fed the same string through
-                                        // `to_shell_request`) cannot disagree
-                                        // about what this client claims to
-                                        // be. `getWebViewUserAgent()V` on
-                                        // `NativeGLJavaInterface` is the
-                                        // engine's own *request* for this
-                                        // value (`native/android_classes.cpp`,
-                                        // still unanswered there, correctly —
-                                        // see that hook's own doc) and this
-                                        // call does not wait for it: nothing
-                                        // established that request fires
-                                        // before a window is asked to open,
-                                        // and answering here, once, beside
-                                        // every other `NativeGLInterface` call
-                                        // this file already makes, cannot be
-                                        // too late for it.
-                                        match None {
-                                            None => println!(
-                                                "  webview: could not read the User-Agent back from \
-                                                 native/init_params.cpp; not calling setWebviewUserAgent"
-                                            ),
-                                            Some(ua) => match lib.symbol(
-                                                "Java_com_roblox_engine_jni_NativeGLInterface_setWebviewUserAgent",
-                                            ) {
-                                                None => println!(
-                                                    "  webview: setWebviewUserAgent not exported by this build"
-                                                ),
-                                                // SAFETY: `f` is a native resolved via a symbol lookup against the loaded libroblox.so, which is never unloaded.
-                                                Some(f) => match unsafe { linker::game_activity::call_static_strings(
-                                                    f,
-                                                    "com/roblox/engine/jni/NativeGLInterface",
-                                                    &[ua.as_str()],
-                                                ) } {
-                                                    Ok(()) => println!("  webview: setWebviewUserAgent ok"),
-                                                    Err(e) => println!(
-                                                        "  webview: setWebviewUserAgent failed: {e}"
-                                                    ),
-                                                },
-                                            },
                                         }
 
                                         // The cookie natives, resolved here
@@ -4261,105 +4140,6 @@ fn main() -> ExitCode {
                                                 // already up, and so a plugin
                                                 // that misbehaves cannot
                                                 // interfere with bring-up.
-                                                let n = 
-                                                if n > 0 {
-                                                    println!("  {n} plugin(s) running");
-                                                }
-
-                                                // ADR-038's hot-swap
-                                                // reconciler: notices a
-                                                // plugin installed, removed,
-                                                // updated, enabled, disabled
-                                                // or granted something new in
-                                                // this profile while this
-                                                // client keeps running, and
-                                                // starts, stops or restarts
-                                                // exactly that plugin through
-                                                // the same `spawn_one`
-                                                // `start_all` just used.
-                                                // Started unconditionally,
-                                                // after `start_all` rather
-                                                // than before it, so its
-                                                // first tick's "what is
-                                                // running" snapshot already
-                                                // matches what `start_all`
-                                                // just spawned instead of
-                                                // racing it.
-                                                
-
-                                                // ADR-026's core bus, from the
-                                                // client rather than from a
-                                                // plugin. Until this line
-                                                // existed the bus had no
-                                                // producer under `cordial-run`
-                                                // at all: `discord-presence`
-                                                // called `lifecycle.subscribe`,
-                                                // was told `ok`, and then waited
-                                                // for a `cordial/client.launch`
-                                                // nothing in the shipping client
-                                                // could publish.
-                                                //
-                                                // Published here rather than at
-                                                // the top of `main`, where the
-                                                // client was actually asked to
-                                                // start, because plugins are
-                                                // deliberately started late --
-                                                // see the comment above -- and a
-                                                // publish before `start_all` has
-                                                // nobody to reach. This is the
-                                                // first moment the fact can be
-                                                // told, not the moment it became
-                                                // true.
-                                                //
-                                                // The profile's *name*, not its
-                                                // path. A plugin may reasonably
-                                                // key what it remembers by which
-                                                // profile is running; it has no
-                                                // business learning where the
-                                                // user's home directory is, and
-                                                // ADR-007's rule that a plugin
-                                                // gets the effect rather than the
-                                                // channel reads the same way here.
-
-                                                // `engine_ver`, read once
-                                                // during bring-up, rather than
-                                                // `engine_version(&opt.lib_dir)`
-                                                // again here. This line called
-                                                // it a second time, on the
-                                                // reasoning that
-                                                // `build_user_agent` reads the
-                                                // version by the same function
-                                                // -- which is not true.
-                                                // `native/init_params.cpp:372`
-                                                // reads the environment
-                                                // variable set from the very
-                                                // read above. Nothing reads
-                                                // `libroblox.so` twice, and the
-                                                // second read was not free:
-                                                // `cordial_update::engine::scan`
-                                                // has no early exit, because it
-                                                // must reach EOF to notice a
-                                                // second, differing candidate.
-                                                // That is a byte walk over the
-                                                // whole 118 MB library, on the
-                                                // main thread, at the moment
-                                                // the engine is up and waiting
-                                                // for its first pump.
-                                                //
-                                                // Empty means it was not
-                                                // readable, and then nothing is
-                                                // published at all -- inventing
-                                                // a version is exactly the bug
-                                                // `engine_version`'s own
-                                                // comment records.
-                                                if engine_ver.is_empty() {
-                                                    println!(
-                                                        "  plugins: engine version not readable, so cordial/engine.version is not published"
-                                                    );
-                                                } else {
-
-                                                }
-
                                                 // Subscribe to the engine's
                                                 // openWindow before the pump
                                                 // starts, the same point
@@ -4398,40 +4178,12 @@ fn main() -> ExitCode {
                                                 // link does nothing at all --
                                                 // the engine issues the
                                                 // request and no one answers.
-                                                cordial_runtime::linking::arm(|name| lib.symbol(name));
                                                 // And voice's permission ask,
                                                 // which rides the same bus
                                                 // asynchronously. Unanswered,
                                                 // Roblox can never request the
                                                 // microphone.
                                                 cordial_runtime::permissions::arm(|name| lib.symbol(name));
-                                                install_webview_presenter();
-
-                                                // A dev-only trigger, in the same family as
-                                                // `CORDIAL_TRACE_PATHS`: off by default, out of the
-                                                // ordinary path, and read exactly once, here, after
-                                                // the presenter above is installed and before the
-                                                // pump this whole feature depends on starts.
-                                                //
-                                                // It exists because `openWindow` needs a real click
-                                                // in signed-in UI and AGENTS.md's "Two practical
-                                                // cautions" rules out faking that click at the
-                                                // compositor -- so there was no way to see whether a
-                                                // web window survives the engine's Vulkan swapchain
-                                                // without driving Cordial's own presenter directly.
-                                                // `webview::dev_trigger_open_window` is that: it
-                                                // skips the engine and the message bus, but not the
-                                                // policy check or the presenter itself, so what opens
-                                                // (or is refused) here is exactly what a real click
-                                                // would have produced for the same URL.
-                                                if let Ok(url) = std::env::var("CORDIAL_WEBVIEW_TEST") {
-                                                    println!(
-                                                        "  webview: CORDIAL_WEBVIEW_TEST set; synthesising an \
-                                                         openWindow request for {url}"
-                                                    );
-                                                    
-                                                }
-
                                                 cordial_runtime::android::looper::pump(
                                                     std::time::Duration::from_secs(secs),
                                                     Some(handle),
@@ -4550,48 +4302,10 @@ fn main() -> ExitCode {
     // and the answer used to be spread across four kinds of line.
     cordial_runtime::unimplemented::report();
 
-    // The last thing any plugin is told, and the one event that has to be
-    // waited for. Delivery is asynchronous by design, so a publish followed by
-    // `_exit` is a race the exit wins -- the pump thread is still holding the
-    // event when the process goes. `flush_core_events` is bounded for the
-    // opposite reason: a plugin that stopped reading must not be able to hold
-    // up Cordial's exit.
-    //
-    // Every path that gets a plugin running comes through here: `start_all` is
-    // called after the engine has the surface, and every `return` in this
-    // function is upstream of that, so there is no exit that skips this except
-    // a crash.
-
-    // 500 ms for the whole flush rather than 500 ms per plugin, which is what
-    // a loop over `Pump::flush` would cost: it takes a fresh deadline each
-    // call, and the number of plugins is the user's choice, so the promise
-    // above would have been one the code could not keep. Named, because "a
-    // plugin" sends whoever reads it to look at all of them.
-    for id in Vec::<String>::new()
-    {
-        println!("  plugin {id}: still had queued core events when the 500 ms shutdown budget ran out; exiting without it");
-    }
-    // Said once, at the end, because an event that nobody counts is the silent
-    // failure the bounded queue exists to avoid becoming. Which of the two
-    // reasons it was comes from the pump rather than from a guess: this line
-    // used to say "its queue was full" for every one, including a plugin that
-    // had crashed, which points a reader at the queue depth and the plugin's
-    // read loop for a plugin that was not slow at all.
-    for u in Vec::<String>::new() {
-        let why = if u.plugin_gone {
-            "it had stopped reading"
-        } else {
-            "its queue was full"
-        };
-        println!("  plugin {}: {} core event(s) never delivered, {why}", u.id, u.events);
-    }
-
     // Before `_exit`, which runs nothing. gamemoded would notice the process
     // was gone on its own — it reaps clients whose pid has vanished — but that
     // is a poll, so leaving it implicit means the governor stays raised for
     // however long the sweep takes after a session ends.
-    gamemode::unregister();
-
     // Leave via _exit rather than returning.
     //
     // Roblox's static initialisers registered atexit handlers and DT_FINI_ARRAY
@@ -4609,102 +4323,6 @@ fn main() -> ExitCode {
 extern "C" {
     #[link_name = "_exit"]
     fn libc_exit(status: std::ffi::c_int) -> !;
-}
-
-/// Feral Interactive's GameMode, asked for over D-Bus.
-///
-/// GameMode is a request rather than a wrapper. There is nothing to link and
-/// nothing to `LD_PRELOAD`: `gamemoded` owns `com.feralinteractive.GameMode` on
-/// the session bus and takes `RegisterGame(i pid)` / `UnregisterGame(i pid)`.
-/// While a client is registered it puts the CPU governor in performance, raises
-/// the process's I/O and scheduling priority, puts the GPU in its performance
-/// profile and inhibits the screensaver. That last one is not a footnote for a
-/// game the user plays with a controller and does not touch the keyboard for.
-///
-/// **Absence is the ordinary case and must not fail a launch.** Most machines
-/// do not have gamemoded, and this is an optimisation rather than a dependency
-/// — a client that refused to start because a performance daemon was missing
-/// would be a far worse bug than the frame it was trying to save. Every failure
-/// here is reported in one line and stepped over.
-///
-/// On by default, which is what Sober does. `CORDIAL_GAMEMODE=0` turns it off,
-/// and that is the control: it is the only way to show, in the same session,
-/// that a timing difference came from this and not from something else.
-mod gamemode {
-    use std::sync::OnceLock;
-
-    const SERVICE: &str = "com.feralinteractive.GameMode";
-    const OBJECT: &str = "/com/feralinteractive/GameMode";
-
-    /// Held for the life of the process rather than opened per call. Not because
-    /// `RegisterGame` needs it — it registers a pid, and gamemoded watches that
-    /// pid rather than this connection — but because [`unregister`] runs during
-    /// teardown, and opening a bus connection is the wrong thing to be doing at
-    /// the point where the engine's own destructors are already known to be
-    /// unsafe to run.
-    static CONNECTION: OnceLock<Option<zbus::blocking::Connection>> = OnceLock::new();
-
-    /// Whether [`register`] actually got a yes, so [`unregister`] does not send
-    /// an `UnregisterGame` for a registration that never happened.
-    static REGISTERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-    fn enabled() -> bool {
-        !matches!(
-            std::env::var("CORDIAL_GAMEMODE").unwrap_or_default().trim(),
-            "0" | "off" | "false" | "no"
-        )
-    }
-
-    fn connection() -> Option<&'static zbus::blocking::Connection> {
-        CONNECTION.get_or_init(|| zbus::blocking::Connection::session().ok()).as_ref()
-    }
-
-    /// `RegisterGame`/`UnregisterGame` both answer `0` for success and a
-    /// negative number for a refusal, so the reply has to be read rather than
-    /// just checked for not being a D-Bus error — gamemoded returns `-1` for a
-    /// pid it will not accept and `-2` for one already registered, over a
-    /// perfectly successful method call.
-    fn call(method: &str) -> Result<i32, String> {
-        let conn = connection().ok_or_else(|| "no session bus".to_string())?;
-        let pid = std::process::id() as i32;
-        let reply = conn
-            .call_method(Some(SERVICE), OBJECT, Some(SERVICE), method, &(pid,))
-            .map_err(|e| e.to_string())?;
-        reply.body().deserialize::<i32>().map_err(|e| e.to_string())
-    }
-
-    pub fn register() {
-        if !enabled() {
-            println!("[gamemode] off (CORDIAL_GAMEMODE=0)");
-            return;
-        }
-        match call("RegisterGame") {
-            Ok(0) => {
-                REGISTERED.store(true, std::sync::atomic::Ordering::Relaxed);
-                println!(
-                    "[gamemode] registered pid {}: performance governor, raised priority, \
-                     GPU performance profile, screensaver inhibited",
-                    std::process::id()
-                );
-            }
-            // Said plainly rather than folded into the error path below. A
-            // daemon that answered and declined is a different situation from
-            // one that is not there, and only the second is the ordinary case.
-            Ok(rc) => println!("[gamemode] gamemoded declined to register this process (rc {rc})"),
-            Err(e) => println!("[gamemode] not available, continuing without it: {e}"),
-        }
-    }
-
-    pub fn unregister() {
-        if !REGISTERED.swap(false, std::sync::atomic::Ordering::Relaxed) {
-            return;
-        }
-        match call("UnregisterGame") {
-            Ok(0) => println!("[gamemode] unregistered"),
-            Ok(rc) => println!("[gamemode] UnregisterGame returned {rc}"),
-            Err(e) => println!("[gamemode] UnregisterGame failed: {e}"),
-        }
-    }
 }
 
 /// The store behind `native/local_storage.cpp`'s `PlatformLocalStorageHandler`
@@ -4758,318 +4376,112 @@ mod local_storage_secrets {
     use std::os::raw::{c_char, c_int, c_longlong};
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     use std::path::PathBuf;
-    use std::time::Duration;
 
-    use cordial_runtime::secrets::{self, Store};
-    use zbus::blocking::{Connection, Proxy};
-    use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
-
-    const SERVICE: &str = "org.freedesktop.secrets";
-    const SERVICE_PATH: &str = "/org/freedesktop/secrets";
-    const IFACE_SERVICE: &str = "org.freedesktop.Secret.Service";
-    const IFACE_ITEM: &str = "org.freedesktop.Secret.Item";
-    /// A schema of its own, distinct from `secrets.rs`'s `org.cordial.Session`
-    /// -- so `secret-tool`/Seahorse show the two families separately, and so a
-    /// search for one can never turn up an item that belongs to the other.
-    const SCHEMA: &str = "org.cordial.LocalStorageSecureValue";
-    const CONTENT_TYPE: &str = "text/plain; charset=utf8";
-    const CALL_TIMEOUT: Duration = Duration::from_secs(3);
-    const FILE_NAME: &str = "local-storage-secrets.json";
+    type FileMap = HashMap<String, HashMap<String, String>>;
 
     fn profile_dir() -> PathBuf {
         cordial_runtime::profile::active()
     }
 
-    /// Keyed by profile path (never by name — see `secrets.rs`'s own
-    /// `attributes()` for why two profiles both called `default` must not
-    /// share an item) plus the account id and, for a single value, the name
-    /// the engine gave it. Omitting `key` widens a search to every value held
-    /// for that account, which `delete_user` below relies on.
-    fn attrs(user_id: i64, key: Option<&str>) -> HashMap<String, String> {
-        let mut m = HashMap::from([
-            ("xdg:schema".to_string(), SCHEMA.to_string()),
-            ("application".to_string(), "cordial".to_string()),
-            ("profile".to_string(), profile_dir().display().to_string()),
-            ("user".to_string(), user_id.to_string()),
-        ]);
-        if let Some(k) = key {
-            m.insert("key".to_string(), k.to_string());
-        }
-        m
-    }
-
-    fn with_timeout<T: Send + 'static>(
-        f: impl FnOnce() -> Result<T, String> + Send + 'static,
-    ) -> Result<T, String> {
-        let (tx, rx) = std::sync::mpsc::sync_channel::<Result<T, String>>(1);
-        if std::thread::Builder::new()
-            .name("cordial-ls-secret".to_string())
-            .spawn(move || {
-                let _ = tx.send(f());
-            })
-            .is_err()
-        {
-            return Err("could not start a worker thread".to_string());
-        }
-        rx.recv_timeout(CALL_TIMEOUT).unwrap_or_else(|_| {
-            Err(format!(
-                "the secret service did not answer within {} seconds",
-                CALL_TIMEOUT.as_secs()
-            ))
-        })
-    }
-
-    fn session() -> Result<(Connection, Proxy<'static>, OwnedObjectPath, OwnedObjectPath), String> {
-        let conn = Connection::session().map_err(|_| "there is no session bus".to_string())?;
-        let service = Proxy::new_owned(conn.clone(), SERVICE, SERVICE_PATH, IFACE_SERVICE)
-            .map_err(|e| format!("the secret service could not be addressed ({e})"))?;
-        let (_output, open_session): (OwnedValue, OwnedObjectPath) = service
-            .call("OpenSession", &("plain", Value::from("")))
-            .map_err(|_| "there is no secret service on the session bus".to_string())?;
-        let collection: OwnedObjectPath = service
-            .call("ReadAlias", &("default",))
-            .map_err(|e| format!("the secret service has no default collection ({e})"))?;
-        if collection.as_str() == "/" {
-            return Err("the secret service has no default collection".to_string());
-        }
-        Ok((conn, service, open_session, collection))
-    }
-
-    fn proxy(conn: &Connection, path: &OwnedObjectPath, iface: &'static str) -> Result<Proxy<'static>, String> {
-        Proxy::new_owned(conn.clone(), SERVICE, path.clone().into_inner(), iface)
-            .map_err(|e| format!("{path} could not be addressed ({e})"))
-    }
-
-    fn keyring_read(request_attrs: HashMap<String, String>) -> Result<Option<String>, String> {
-        with_timeout(move || {
-            let (conn, service, item_session, _collection) = session()?;
-            let (unlocked, _locked): (Vec<OwnedObjectPath>, Vec<OwnedObjectPath>) = service
-                .call("SearchItems", &(request_attrs,))
-                .map_err(|e| format!("the keyring could not be searched ({e})"))?;
-            let Some(item) = unlocked.into_iter().next() else {
-                return Ok(None);
-            };
-            let (_session, _parameters, value, _content): (
-                OwnedObjectPath,
-                Vec<u8>,
-                Vec<u8>,
-                String,
-            ) = proxy(&conn, &item, IFACE_ITEM)?
-                .call("GetSecret", &(&item_session,))
-                .map_err(|e| format!("the stored value could not be read ({e})"))?;
-            String::from_utf8(value)
-                .map(Some)
-                .map_err(|_| "the stored value is not text".to_string())
-        })
-    }
-
-    fn keyring_write(
-        request_attrs: HashMap<String, String>,
-        label: String,
-        body: String,
-    ) -> Result<(), String> {
-        with_timeout(move || {
-            let (conn, _service, item_session, collection) = session()?;
-            let mut properties: HashMap<&str, Value<'_>> = HashMap::new();
-            properties.insert("org.freedesktop.Secret.Item.Label", Value::from(label.as_str()));
-            properties.insert(
-                "org.freedesktop.Secret.Item.Attributes",
-                Value::from(request_attrs),
-            );
-            let secret = (item_session, Vec::<u8>::new(), body.into_bytes(), CONTENT_TYPE);
-            let (_item, prompt): (OwnedObjectPath, OwnedObjectPath) =
-                proxy(&conn, &collection, "org.freedesktop.Secret.Collection")?
-                    .call("CreateItem", &(properties, secret, true))
-                    .map_err(|e| format!("the value could not be stored ({e})"))?;
-            if prompt.as_str() != "/" {
-                return Err("storing the value would have needed a prompt".to_string());
-            }
-            Ok(())
-        })
-    }
-
-    fn keyring_remove(request_attrs: HashMap<String, String>) -> Result<(), String> {
-        with_timeout(move || {
-            let (conn, service, _item_session, _collection) = session()?;
-            let (unlocked, _locked): (Vec<OwnedObjectPath>, Vec<OwnedObjectPath>) = service
-                .call("SearchItems", &(request_attrs,))
-                .map_err(|e| format!("the keyring could not be searched ({e})"))?;
-            for item in unlocked {
-                let _prompt: OwnedObjectPath = proxy(&conn, &item, IFACE_ITEM)?
-                    .call("Delete", &())
-                    .map_err(|e| format!("a stored value could not be removed ({e})"))?;
-            }
-            Ok(())
-        })
-    }
-
-    // -----------------------------------------------------------------
-    // The file backend: one JSON document per profile rather than one file
-    // per value, for the same reason `secrets.rs`'s file store is one
-    // document rather than one file per cookie — a directory full of
-    // ad-hoc-named files in a profile is a worse audit surface than one
-    // named store, and `write_file` below is the same temp-then-rename
-    // shape `secrets.rs`'s `write_private` uses, for the same reason: a
-    // reader must see the old body or the new one, never half of either.
-    // -----------------------------------------------------------------
-
-    type FileMap = HashMap<String, HashMap<String, String>>;
-
     fn file_path() -> PathBuf {
-        profile_dir().join(FILE_NAME)
+        profile_dir().join("local-storage.json")
     }
 
-    fn file_load() -> FileMap {
+    fn load() -> FileMap {
         std::fs::read_to_string(file_path())
             .ok()
             .and_then(|text| serde_json::from_str(&text).ok())
             .unwrap_or_default()
     }
 
-    fn file_save(map: &FileMap) -> std::io::Result<()> {
-        let final_path = file_path();
-        let tmp = profile_dir().join(format!("{FILE_NAME}.new"));
+    fn save(map: &FileMap) -> std::io::Result<()> {
+        let path = file_path();
+        let temporary = path.with_extension("json.tmp");
         let body = serde_json::to_string(map).map_err(std::io::Error::other)?;
 
-        let mut f = std::fs::OpenOptions::new()
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
             .mode(0o600)
-            .open(&tmp)?;
-        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        f.write_all(body.as_bytes())?;
-        f.sync_all()?;
-        drop(f);
-        std::fs::rename(&tmp, &final_path)
+            .open(&temporary)?;
+
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        file.write_all(body.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+
+        std::fs::rename(temporary, path)
     }
 
-    // -----------------------------------------------------------------
-    // The three operations, dispatched on the same `Store` cookies and
-    // identity already settled on this launch.
-    // -----------------------------------------------------------------
-
     fn get(user_id: i64, key: &str) -> Option<String> {
-        match secrets::active() {
-            Store::None => None,
-            Store::File => file_load().get(&user_id.to_string()).and_then(|m| m.get(key)).cloned(),
-            Store::Keyring => match keyring_read(attrs(user_id, Some(key))) {
-                Ok(v) => v,
-                Err(why) => {
-                    println!("  [local-storage] {key}: not read back ({why})");
-                    None
-                }
-            },
-        }
+        load()
+            .get(&user_id.to_string())
+            .and_then(|values| values.get(key))
+            .cloned()
     }
 
     fn set(user_id: i64, key: &str, value: &str) -> bool {
-        match secrets::active() {
-            // Matches secrets.rs's own `Store::None` save: accepted and
-            // discarded rather than refused, so a user who opted out of
-            // storage entirely is not additionally punished with a JNI
-            // `false` the engine has no way to explain to anyone.
-            Store::None => true,
-            Store::File => {
-                let mut map = file_load();
-                map.entry(user_id.to_string())
-                    .or_default()
-                    .insert(key.to_string(), value.to_string());
-                match file_save(&map) {
-                    Ok(()) => true,
-                    Err(e) => {
-                        println!("  [local-storage] {key}: not saved ({e})");
-                        false
-                    }
-                }
-            }
-            Store::Keyring => {
-                let label = format!(
-                    "Cordial: Roblox local storage ({key}) for profile {:?}",
-                    profile_dir().file_name().map(|n| n.to_string_lossy().into_owned())
-                );
-                match keyring_write(attrs(user_id, Some(key)), label, value.to_string()) {
-                    Ok(()) => true,
-                    Err(why) => {
-                        println!("  [local-storage] {key}: not saved ({why})");
-                        false
-                    }
-                }
+        let mut map = load();
+
+        map.entry(user_id.to_string())
+            .or_default()
+            .insert(key.to_string(), value.to_string());
+
+        match save(&map) {
+            Ok(()) => true,
+            Err(error) => {
+                println!("[local-storage] {key}: not saved ({error})");
+                false
             }
         }
     }
 
     fn delete(user_id: i64, key: &str) -> bool {
-        match secrets::active() {
-            Store::None => true,
-            Store::File => {
-                let mut map = file_load();
-                if let Some(m) = map.get_mut(&user_id.to_string()) {
-                    m.remove(key);
-                }
-                match file_save(&map) {
-                    Ok(()) => true,
-                    Err(e) => {
-                        println!("  [local-storage] {key}: not removed ({e})");
-                        false
-                    }
-                }
+        let mut map = load();
+
+        if let Some(values) = map.get_mut(&user_id.to_string()) {
+            values.remove(key);
+
+            if values.is_empty() {
+                map.remove(&user_id.to_string());
             }
-            Store::Keyring => match keyring_remove(attrs(user_id, Some(key))) {
-                Ok(()) => true,
-                Err(why) => {
-                    println!("  [local-storage] {key}: not removed ({why})");
-                    false
-                }
-            },
+        }
+
+        match save(&map) {
+            Ok(()) => true,
+            Err(error) => {
+                println!("[local-storage] {key}: not removed ({error})");
+                false
+            }
         }
     }
 
     fn delete_user(user_id: i64) -> bool {
-        match secrets::active() {
-            Store::None => true,
-            Store::File => {
-                let mut map = file_load();
-                map.remove(&user_id.to_string());
-                match file_save(&map) {
-                    Ok(()) => true,
-                    Err(e) => {
-                        println!("  [local-storage] account values: not removed ({e})");
-                        false
-                    }
-                }
+        let mut map = load();
+        map.remove(&user_id.to_string());
+
+        match save(&map) {
+            Ok(()) => true,
+            Err(error) => {
+                println!("[local-storage] account values: not removed ({error})");
+                false
             }
-            // No "key" attribute: every item this profile holds for the
-            // account, not one value of it.
-            Store::Keyring => match keyring_remove(attrs(user_id, None)) {
-                Ok(()) => true,
-                Err(why) => {
-                    println!("  [local-storage] account values: not removed ({why})");
-                    false
-                }
-            },
         }
     }
 
-    // -----------------------------------------------------------------
-    // The C boundary. `native/local_storage.cpp` declares these four
-    // directly against these symbol names — see that file's header for why
-    // there is no generated binding for them.
-    // -----------------------------------------------------------------
-
-    unsafe fn borrow_str<'a>(p: *const c_char) -> Option<&'a str> {
-        if p.is_null() {
+    unsafe fn borrow_str<'a>(pointer: *const c_char) -> Option<&'a str> {
+        if pointer.is_null() {
             return None;
         }
-        // SAFETY: the caller (native/local_storage.cpp) passes a
-        // NUL-terminated buffer it owns for the duration of this call.
-        unsafe { CStr::from_ptr(p) }.to_str().ok()
+
+        unsafe { CStr::from_ptr(pointer) }.to_str().ok()
     }
 
-    /// Returns `0` on an ordinary call, whether or not anything was found;
-    /// `*found` and `*out_len` carry the actual answer. `-1` means the call
-    /// itself could not be made (a bad key, a null buffer) rather than
-    /// anything about whether a value exists.
     #[no_mangle]
     pub extern "C" fn cordial_local_storage_get(
         user_id: c_longlong,
@@ -5079,38 +4491,34 @@ mod local_storage_secrets {
         found: *mut c_int,
         out_len: *mut usize,
     ) -> c_int {
-        // SAFETY: `key` is a NUL-terminated C string owned by the caller for
-        // the duration of this call; `out`/`found`/`out_len` are live
-        // buffers the caller sized and will read back afterwards.
         let Some(key) = (unsafe { borrow_str(key) }) else {
             return -1;
         };
+
         if out.is_null() || found.is_null() || out_len.is_null() {
             return -1;
         }
+
         let value = get(user_id as i64, key);
-        // SAFETY: pointers were just checked non-null; `out` has `out_cap`
-        // bytes per the caller's own contract in local_storage.cpp.
+
         unsafe {
             match value {
                 None => {
                     *found = 0;
                     *out_len = 0;
                 }
-                Some(v) => {
-                    let bytes = v.as_bytes();
-                    // `>=` rather than `>`: a byte of the cap is reserved for
-                    // the NUL the C++ side reads the string through.
+                Some(value) => {
+                    let bytes = value.as_bytes();
+
                     if bytes.len() >= out_cap {
-                        println!(
-                            "  [local-storage] {key}: {} bytes does not fit the platform \
-                             buffer; treated as absent rather than truncated",
-                            bytes.len()
-                        );
                         *found = 0;
                         *out_len = bytes.len();
                     } else {
-                        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out as *mut u8, bytes.len());
+                        std::ptr::copy_nonoverlapping(
+                            bytes.as_ptr(),
+                            out as *mut u8,
+                            bytes.len(),
+                        );
                         *out.add(bytes.len()) = 0;
                         *found = 1;
                         *out_len = bytes.len();
@@ -5118,6 +4526,7 @@ mod local_storage_secrets {
                 }
             }
         }
+
         0
     }
 
@@ -5128,37 +4537,55 @@ mod local_storage_secrets {
         value: *const c_char,
         value_len: usize,
     ) -> c_int {
-        // SAFETY: as above; `value` points to `value_len` bytes the caller
-        // owns for the duration of this call.
         let Some(key) = (unsafe { borrow_str(key) }) else {
             return -1;
         };
+
         if value.is_null() {
             return -1;
         }
-        // SAFETY: `value` points to `value_len` bytes the caller owns for the
-        // duration of this call, per this function's own contract above.
-        let bytes = unsafe { std::slice::from_raw_parts(value as *const u8, value_len) };
+
+        let bytes = unsafe {
+            std::slice::from_raw_parts(value as *const u8, value_len)
+        };
+
         let Ok(value) = std::str::from_utf8(bytes) else {
-            println!("  [local-storage] {key}: value is not UTF-8; refused rather than stored");
+            println!("[local-storage] {key}: value is not UTF-8");
             return -1;
         };
-        if set(user_id as i64, key, value) { 0 } else { -1 }
+
+        if set(user_id as i64, key, value) {
+            0
+        } else {
+            -1
+        }
     }
 
     #[no_mangle]
-    pub extern "C" fn cordial_local_storage_delete(user_id: c_longlong, key: *const c_char) -> c_int {
-        // SAFETY: `key` is a NUL-terminated C string owned by the caller for
-        // the duration of this call, per `borrow_str`'s own contract.
+    pub extern "C" fn cordial_local_storage_delete(
+        user_id: c_longlong,
+        key: *const c_char,
+    ) -> c_int {
         let Some(key) = (unsafe { borrow_str(key) }) else {
             return -1;
         };
-        if delete(user_id as i64, key) { 0 } else { -1 }
+
+        if delete(user_id as i64, key) {
+            0
+        } else {
+            -1
+        }
     }
 
     #[no_mangle]
-    pub extern "C" fn cordial_local_storage_delete_user(user_id: c_longlong) -> c_int {
-        if delete_user(user_id as i64) { 0 } else { -1 }
+    pub extern "C" fn cordial_local_storage_delete_user(
+        user_id: c_longlong,
+    ) -> c_int {
+        if delete_user(user_id as i64) {
+            0
+        } else {
+            -1
+        }
     }
 }
 
