@@ -356,6 +356,31 @@ pub fn build(host_libc: bool, imports: &crate::elf::Imports) -> SymbolTable {
         }
     }
 
+    // OpenSL ES is a real virtual dependency, even when the ELF import
+    // scanner does not surface its symbols in "imports". The loader still has
+    // to satisfy DT_NEEDED, and opensles.cpp already provides the complete
+    // symbol surface. Register it explicitly rather than relying on the import
+    // scan to discover the library.
+    {
+        const OPENSL_ES_LIBRARY_NAME: &str = "libOpenSLES.so";
+        let opensles = table.libraries.entry(OPENSL_ES_LIBRARY_NAME).or_default();
+        for (symbol, address) in crate::bionic::opensles_overrides() {
+            if opensles.iter().any(|entry| entry.symbol == symbol) {
+                continue;
+            }
+            opensles.push(Entry {
+                symbol,
+                address,
+                source: Source::Cordial,
+            });
+            table
+                .stats
+                .entry(OPENSL_ES_LIBRARY_NAME)
+                .or_default()
+                .record(Source::Cordial);
+        }
+    }
+
     if crate::bionic::aaudio_selected() {
         let aaudio = table.libraries.entry(AAUDIO_LIBRARY_NAME).or_default();
         for (symbol, address) in crate::bionic::aaudio_overrides() {
