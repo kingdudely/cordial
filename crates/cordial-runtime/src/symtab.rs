@@ -23,6 +23,19 @@ use std::ffi::{c_char, c_int, c_void, CString};
 
 use crate::elf::Binding;
 
+/// Symbols provided by the bionic linker itself. They must not be registered
+/// as guest-library stubs: libroblox.so imports several of these and expects
+/// them to remain the linker's real implementation during static initialization.
+const LINKER_PROVIDED: &[&str] = &[
+    "dlopen",
+    "dlsym",
+    "dlclose",
+    "dlerror",
+    "dladdr",
+    "dl_iterate_phdr",
+    "dlvsym",
+];
+
 /// Symbol prefix -> the Android library that provides it. These have no host
 /// equivalent, so they are always stubbed; the mapping only decides which
 /// soname Cordial registers them under.
@@ -288,6 +301,9 @@ pub fn build(host_libc: bool, imports: &crate::elf::Imports) -> SymbolTable {
     };
 
     for (symbol, binding) in imports {
+        if LINKER_PROVIDED.contains(&symbol.as_str()) {
+            continue;
+        }
         let class = classify(symbol);
         let (library, address, source) =
             resolve(symbol, &class, &overrides, &host_libs, libc.as_ref())
