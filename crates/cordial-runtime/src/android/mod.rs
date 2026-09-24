@@ -12,7 +12,6 @@
 //! The order is not arbitrary: assets gate everything, because the engine cannot
 //! load a shader or a font without them. See docs/design/path-to-a-frame.md.
 
-pub mod accessibility;
 pub mod asset;
 pub mod capture;
 pub mod clipboard;
