@@ -17,11 +17,7 @@ mkdir -p "$APP_DIR"
 # Desktop Entry Exec fields use their own quoting rules.
 escape_exec() {
   local s=$1
-  s=${s//\\/\\\\}
-  s=${s//"/\\"}
-  s=${s// /\\ }
-  s=${s//$'\t'/\\t}
-  printf "%s" "$s"
+  printf '\"%s\"' "$s"
 }
 EXEC_PATH=$(escape_exec "$ROBLOX")
 
