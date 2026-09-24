@@ -1297,7 +1297,6 @@ pub fn pump(duration: std::time::Duration, game_activity_handle: Option<i64>) {
             // the engine's input natives have only ever been called from the
             // pump, and a socket handler is not the place to find out whether
             // they mind. A no-op unless `CORDIAL_DEV_CONTROL` was set.
-            crate::devctl::apply_queued(handle);
             // Tell the engine when the user has switched away, and when they
             // have come back.
             //
@@ -1408,7 +1407,6 @@ pub fn pump(duration: std::time::Duration, game_activity_handle: Option<i64>) {
         // background, and it is cheap when nothing has changed -- one
         // `read_dir` a second, and between those a metadata read that usually
         // finds the file no longer than it was.
-        crate::game_log::poll();
 
         // A deep link waiting for the app shell to exist, here for the same
         // reason and on the same thread: `APP_READY` arrives on the engine's
