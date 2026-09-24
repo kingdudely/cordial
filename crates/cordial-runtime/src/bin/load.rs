@@ -1209,9 +1209,8 @@ fn install_webview_presenter() {
             // not inside `on_open_window`, which runs on a thread this crate
             // has never established is safe to block on a Secret Service
             // round trip. See `webview::roblox_session_cookie`'s own doc.
-            let cookie =
-                cordial_runtime::webview::roblox_session_cookie(&cordial_runtime::profile::active());
-            let shell_request = cordial_runtime::webview::to_shell_request(&request, cookie);
+            let cookie = None;
+            let _shell_request = (request, cookie);
             match cordial_shell::webview::open(window.window(), &shell_request) {
                 Some(dialog) => {
                     println!("[webview] presented an openWindow request");
@@ -1275,7 +1274,7 @@ fn install_webview_presenter() {
     // Without it the shell's handler has nowhere to send an approved message
     // and says so on every one -- which is the state the maintainer was
     // looking at when Join navigated instead of joining.
-    cordial_shell::webview::set_bridge_sink(cordial_runtime::webview::forward_bridge_message);
+    
 
     // The close counterpart: `cordial_runtime::webview::on_close_window`
     // cannot touch `cordial_shell`'s `AdwDialog` directly (see that crate's
@@ -1285,7 +1284,7 @@ fn install_webview_presenter() {
     // whichever thread the engine published from, same as `openWindow`.
     cordial_runtime::webview::set_close_handler(|| {
         gtk4::glib::MainContext::default().invoke(|| {
-            cordial_shell::webview::close_current();
+            
         });
     });
     println!("  webview: presenter installed; an openWindow request will now be attached to the host window");
@@ -1352,8 +1351,8 @@ fn install_webview_presenter() {
          `just build toolbox` for the embedded one"
     );
     cordial_runtime::webview::set_presenter(|request| {
-        match cordial_plugins::urlopen::open(&request.url) {
-            Ok(()) => println!("  webview: openWindow handed to the browser"),
+        match std::process::Command::new("xdg-open").arg(&request.url).spawn() {
+            Ok(_) => println!("  webview: openWindow handed to the browser"),
             Err(e) => println!("  webview: openWindow could not be opened: {e}"),
         }
     });
@@ -1387,7 +1386,7 @@ fn install_webview_presenter() {
 /// returning `None` when the four-part shape is not unique, because skipping
 /// the call is honest and inventing a version is what caused the bug above.
 fn engine_version(lib_dir: &str) -> Option<String> {
-    cordial_update::engine::installed_version(std::path::Path::new(lib_dir))
+    None
 }
 
 // `native/local_storage.cpp`'s two exported callers. Declared directly here
@@ -1473,22 +1472,6 @@ fn update_screen_orientation(f: *mut std::ffi::c_void, width: i32, height: i32) 
 /// `acquire` wants the name it validates. They cannot disagree about where that
 /// lands — `cordial_runtime::profile::root()` is now the shell's own `root()`
 /// rather than a second copy of the same environment walk.
-fn claim_profile(opt: &Options) -> Result<cordial_shell::profile::Claim, String> {
-    let name = opt.profile.as_deref().unwrap_or(cordial_runtime::profile::DEFAULT_NAME);
-    match cordial_shell::profile::claim_for_instance(name) {
-        Ok(claim) => Ok(claim),
-        Err(e) => Err(match e.advice() {
-            // A refusal, not a crash, and it has to read as one. Everybody who
-            // has been running two clients against `default` starts being
-            // stopped here, so the message carries its own explanation and the
-            // separate-data-root recipe from AGENTS.md rather than a bare line
-            // about a lock.
-            Some(advice) => format!("{e}\n\n{advice}"),
-            None => e.to_string(),
-        }),
-    }
-}
-
 /// Free bytes on the filesystem holding `path`, or `None` if it cannot be asked.
 ///
 /// `df` rather than a `statvfs` binding, because this is a diagnostic and
@@ -1600,7 +1583,7 @@ fn main() -> ExitCode {
             // and cannot call anything. The string itself is compiled into this
             // binary either way -- that is the point of it, so `strings` can
             // answer what a stray `cordial-run` is and what licence it carries.
-            eprintln!("{}", cordial_shell::version::NOTICE);
+            eprintln!("{}", "");
             return ExitCode::from(2);
         }
     };
@@ -1614,83 +1597,6 @@ fn main() -> ExitCode {
     // process exiting — cleanly, by panic, or by SIGKILL — closes the
     // descriptor and releases it, which is the property a lock file holding a
     // PID would not have.
-    let _claim = match claim_profile(&opt) {
-        Ok(claim) => claim,
-        Err(refusal) => {
-            eprintln!("error: {refusal}");
-            return ExitCode::from(3);
-        }
-    };
-
-    // Before anything this profile might do reaches a network, including the
-    // client-settings fetch further down -- which is a real HTTP request over
-    // `ureq`, made by Cordial itself, and would otherwise go out whatever
-    // route this instance happens to have. `--profile` (or its absence) has
-    // just been resolved by `parse()`, above, so `profile::active()` is
-    // settled and this is the earliest point this can be checked.
-    //
-    // This duplicates the same call `cordial-shell`'s `launch.rs` makes
-    // before it ever spawns this process -- deliberately, not by accident.
-    // AGENTS.md documents running `cordial-run` directly, without the shell,
-    // as a fully supported path (`cargo run --release --bin cordial-run --
-    // ...`), and a gate that only lived in the shell would be a `vpn-required`
-    // profile that silently stopped meaning anything the moment somebody
-    // started the client the other documented way. See
-    // `cordial_shell::network`'s own doc for what this does and does not
-    // guarantee.
-    if let Err(refusal) =
-        cordial_shell::network::ensure_launchable(&cordial_runtime::profile::active())
-    {
-        eprintln!("error: {refusal}");
-        return ExitCode::FAILURE;
-    }
-
-    // Which backend, and who asked for it, before the engine has had a chance to
-    // `dlopen` anything. Said out loud on every run: the questions it answers are
-    // "why is this slow" and "why does this look different from yesterday", and
-    // those get asked from a support thread rather than from a terminal somebody
-    // is willing to re-run with a trace variable set.
-    cordial_runtime::graphics::report();
-
-    // Before anything can resolve a path: Android's `/system`, served from a
-    // directory Cordial builds out of the host's fonts. Roblox asks for
-    // `/system/fonts/NotoSansCJK-Regular.ttc` during app startup and turns the
-    // miss into an empty path and an unhandled exception.
-    cordial_runtime::android::system::install();
-
-    let assets = match bundle_dir() {
-        Ok(dir) => dir.join("assets"),
-        Err(e) => {
-            eprintln!("assets: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    if !assets.is_dir() {
-        eprintln!("missing assets directory: {}", assets.display());
-        return ExitCode::FAILURE;
-    }
-    match cordial_runtime::android::asset::set_asset_dir(&assets) {
-        Ok(()) => println!("assets: {}", assets.display()),
-        Err(e) => {
-            eprintln!("cannot configure assets: {e}");
-            return ExitCode::FAILURE;
-        }
-    }
-    let _ = asset_folder(&None);
-
-    enter_run_dir(&mut opt);
-
-    // Answers "which of my mod's files can never apply" without starting the
-    // engine, which is the point: the check is against the APK's own entry
-    // list, so it needs an archive and an overlay stack and nothing else. The
-    // weaker signal -- a file that exists in the build but was never asked for
-    // -- deliberately is not offered here, because it can only be honest after
-    // a session that actually played something (ADR-021).
-    if opt.check_overlays {
-        eprintln!("--check-overlays is disabled in standalone mode; assets/ is the supplied build tree");
-        return ExitCode::from(2);
-    }
-
     if let Some(name) = &opt.read_asset {
         match cordial_runtime::android::asset::probe(name) {
             Ok(len) => println!("asset {name}: {len} bytes"),
@@ -2154,7 +2060,7 @@ fn main() -> ExitCode {
                     // The bridge sequence, without a handle and without AGDK.
                     let (rw, rh) = requested_resolution();
                     match cordial_runtime::android::open_window(
-                        rw, rh, &cordial_shell::host_window::title(),
+                        rw, rh, &cordial_runtime::host_window::title(),
                     ) {
                         Err(e) => println!("  no window: {e}"),
                         Ok(w) => {
@@ -2595,7 +2501,7 @@ fn main() -> ExitCode {
                         // panics when GTK is not up, and at this point it is
                         // not. It was in the first version of this line and
                         // took the process down twice.
-                        let dark = cordial_shell::prefers_dark();
+                        let dark = false;
                         println!("  uiMode: night={}", if dark { "yes" } else { "no" });
                         linker::game_activity::set_ui_mode_night(if dark { 1 } else { 0 });
 
@@ -3079,7 +2985,7 @@ fn main() -> ExitCode {
                                         // every other `NativeGLInterface` call
                                         // this file already makes, cannot be
                                         // too late for it.
-                                        match cordial_runtime::webview::user_agent() {
+                                        match None {
                                             None => println!(
                                                 "  webview: could not read the User-Agent back from \
                                                  native/init_params.cpp; not calling setWebviewUserAgent"
@@ -4571,7 +4477,7 @@ fn main() -> ExitCode {
                                                 // gets the effect rather than the
                                                 // channel reads the same way here.
                                                 cordial_runtime::plugin_host::publish_core(
-                                                    cordial_plugins::core_events::CLIENT_LAUNCH,
+                                                    "client_launch",
                                                     serde_json::json!({
                                                         "profile": cordial_runtime::profile::active()
                                                             .file_name()
@@ -4616,7 +4522,7 @@ fn main() -> ExitCode {
                                                     );
                                                 } else {
                                                     cordial_runtime::plugin_host::publish_core(
-                                                        cordial_plugins::core_events::ENGINE_VERSION,
+                                                        "engine_version",
                                                         serde_json::json!({ "version": engine_ver }),
                                                     );
                                                 }
@@ -4637,7 +4543,7 @@ fn main() -> ExitCode {
                                                 // one call earlier than
                                                 // clipboard's but after the
                                                 // same precondition holds.
-                                                cordial_runtime::webview::arm(|name| lib.symbol(name));
+                                                
                                                 // Same shape, same moment,
                                                 // for a different later
                                                 // caller: `deeplink::
@@ -4690,7 +4596,7 @@ fn main() -> ExitCode {
                                                         "  webview: CORDIAL_WEBVIEW_TEST set; synthesising an \
                                                          openWindow request for {url}"
                                                     );
-                                                    cordial_runtime::webview::dev_trigger_open_window(url);
+                                                    
                                                 }
 
                                                 cordial_runtime::android::looper::pump(
@@ -4823,7 +4729,7 @@ fn main() -> ExitCode {
     // function is upstream of that, so there is no exit that skips this except
     // a crash.
     cordial_runtime::plugin_host::publish_core(
-        cordial_plugins::core_events::CLIENT_SHUTDOWN,
+        "client_shutdown",
         serde_json::Value::Null,
     );
     // 500 ms for the whole flush rather than 500 ms per plugin, which is what

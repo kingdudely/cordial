@@ -1,20 +1,4 @@
-//! The one window Cordial has: an `AdwWindow` carrying an `AdwToolbarView`,
-//! a header bar, and a content slot.
-//!
-//! [ADR-002](../../../docs/adr/ADR-002-core-shell-and-ui-handoff.md) gives core
-//! a shell — window, chooser, an escape hatch — and
-//! [ADR-011](../../../docs/adr/ADR-011-wayland-and-libadwaita.md) says of that
-//! shell and the engine's host window that they "are the same window", because
-//! "building the engine's host window as a bare Wayland surface would mean
-//! building the shell twice, and the second one would have to inherit the theme
-//! anyway". This module is where that sentence stops being an intention: the
-//! shell binary fills the content slot with the chooser, and `cordial-runtime`
-//! fills it with the engine's Wayland subsurface. One window definition, two
-//! callers.
-//!
-//! It stays deliberately thin. Anything that grows — settings, themes,
-//! plugin-contributed views — belongs to the UI plugin, not here.
-
+//! Minimal GTK/libadwaita host window for the standalone Roblox runtime.
 use gdk4_wayland::prelude::*;
 use libadwaita as adw;
 use libadwaita::glib;
@@ -53,7 +37,7 @@ pub fn title() -> String {
     // The name rather than a literal, so the twice-a-year joke reaches the one
     // place a user actually reads it. See `branding`: decided once, never
     // polled, and never applied to anything in the repository.
-    format!("{} {}", crate::branding::current().name(), crate::version::full())
+    "Roblox".to_string()
 }
 
 /// How much of a monitor to leave for whatever else is on it.
@@ -534,8 +518,7 @@ impl HostWindow {
     /// is added on top of that, so the engine gets the resolution it asked for
     /// rather than that minus a titlebar.
     pub fn with_canvas(title: &str, width: i32, height: i32) -> Self {
-        let title_bar = crate::title_bar::TitleBar::from_env();
-        let chrome_height = if title_bar.revealed(false) { header_height_hint() } else { 0 };
+        let chrome_height = header_height_hint();
         // A `GtkDrawingArea` with no draw function paints nothing at all, so
         // what shows through is the themed window background — which is
         // exactly what ADR-011 asks for behind the canvas ("the desktop's own
@@ -560,7 +543,7 @@ impl HostWindow {
         // hole. What it must not do is imply the line below is load-bearing.
         canvas.set_cursor_from_name(canvas_cursor());
         let host = Self::new(title, width, height + chrome_height, &canvas);
-        host.toolbar.set_reveal_top_bars(title_bar.revealed(false));
+        host.toolbar.set_reveal_top_bars(true);
 
         // Hide the header bar while fullscreen. Restore it afterwards only
         // when the saved preference has not hidden windowed chrome too.
@@ -579,7 +562,7 @@ impl HostWindow {
         {
             let toolbar_for_fs = host.toolbar.clone();
             host.window.connect_fullscreened_notify(move |w| {
-                toolbar_for_fs.set_reveal_top_bars(title_bar.revealed(w.is_fullscreen()));
+                toolbar_for_fs.set_reveal_top_bars(!w.is_fullscreen());
                 // Leaving fullscreen left the bar missing until the app menu
                 // was opened and closed. The reveal alone need not reach the
                 // compositor: GSK can judge a fullscreen-transition frame
@@ -613,7 +596,7 @@ impl HostWindow {
         // libadwaita default nearer 47px, which read as "the x in the title bar
         // looks off and the titlebar looks short". That is now opt-in through
         // the Appearance page rather than the only option.
-        let compact = title_bar == crate::title_bar::TitleBar::Compact;
+        let compact = false;
         // The see-through state is a class rather than the default, and that
         // distinction is the whole lesson of 5a295e3. A permanently transparent
         // toplevel shows the desktop whenever the engine is not painting, which
@@ -1979,7 +1962,7 @@ mod tests {
         let t = title();
         // Whichever face today wears -- the version has to follow the name
         // either way, and on two days a year the name is not "Cordial".
-        let name = crate::branding::current().name();
+        let name = "Roblox";
         assert!(t.starts_with(&format!("{name} ")), "{t}");
         for backend in ["OpenGL", "GLES", "Vulkan"] {
             assert!(!t.contains(backend), "{t} names a graphics backend");

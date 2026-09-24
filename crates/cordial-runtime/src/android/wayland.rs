@@ -1059,7 +1059,7 @@ unsafe impl Sync for XkbState {}
 /// called `open`, which is the same thread `looper::pump` runs on, which is
 /// the thread Android calls the UI thread. Nothing else may touch it, and
 /// that is the whole justification for the `unsafe impl` below.
-struct HostWindowCell(cordial_shell::host_window::HostWindow);
+struct HostWindowCell(crate::host_window::HostWindow);
 // SAFETY: see above — main-thread-only by construction, and only reachable
 // through `&WaylandWindow`, whose other users (Mesa's EGL/Vulkan paths, from
 // the engine's render thread) never call the methods that go through here.
@@ -1367,8 +1367,8 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
     // `xdg_toplevel`, draws the header bar and answers configure/ack; this
     // file's job starts at the content area and stops there. See the module
     // doc for why the engine's surface cannot live on a connection of its own.
-    cordial_shell::host_window::init_wayland()?;
-    let host = cordial_shell::host_window::HostWindow::with_canvas(title, width as i32, height as i32);
+    crate::host_window::init_wayland()?;
+    let host = crate::host_window::HostWindow::with_canvas(title, width as i32, height as i32);
 
     // Size and maximised state from the last session on this profile, applied
     // before the window is presented so it maps at the remembered geometry
@@ -1385,12 +1385,6 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
     // resize -- the same sequence a fullscreen toggle mid-session goes through.
     // A restored size that bypassed that would be the letterboxing bug this
     // file's own history is full of.
-    cordial_shell::window_state::remember(
-        host.window(),
-        crate::profile::active(),
-        cordial_shell::window_state::Which::Game,
-    );
-
     host.present();
     host.wait_until_mapped(std::time::Duration::from_secs(5))?;
 
@@ -2339,7 +2333,7 @@ impl WaylandWindow {
             None => info.font_size,
         };
 
-        self.host.0.set_text_overlay(Some(cordial_shell::host_window::TextOverlay {
+        self.host.0.set_text_overlay(Some(crate::host_window::TextOverlay {
             text,
             caret_chars: caret,
             x: info.x,
@@ -5804,7 +5798,7 @@ pub fn focused() -> Option<bool> {
 /// throttle policy.
 ///
 /// `None` is "not known yet" and must not be read as "not visible" — see
-/// [`cordial_shell::host_window::HostWindow::visible`], which carries the
+/// [`crate::host_window::HostWindow::visible`], which carries the
 /// protocol detail and the note about what was measured rather than assumed.
 pub fn visible() -> Option<bool> {
     current().and_then(|w| w.host.0.visible())
@@ -5812,7 +5806,7 @@ pub fn visible() -> Option<bool> {
 
 /// The physical size in millimetres of the monitor the window is on.
 ///
-/// See [`cordial_shell::host_window::HostWindow::monitor_physical_mm`], which
+/// See [`crate::host_window::HostWindow::monitor_physical_mm`], which
 /// carries the reasoning about why it is the window's own monitor rather than
 /// the first in the list.
 pub fn display_physical_mm() -> Option<(i32, i32)> {
@@ -5829,7 +5823,7 @@ pub fn instr_toplevel_state() -> String {
 }
 
 /// Minimise or restore from a scripted run. See
-/// [`cordial_shell::host_window::HostWindow::set_minimised`] for why this is
+/// [`crate::host_window::HostWindow::set_minimised`] for why this is
 /// the only honest way to exercise the visibility path here.
 pub fn instr_set_minimised(on: bool) {
     if let Some(w) = current() {
