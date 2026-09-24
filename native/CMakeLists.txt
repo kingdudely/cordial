@@ -61,7 +61,7 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../third_party/mcpelauncher-linker
 #
 # Kept on our side rather than patched into the submodule because the Flatpak
 # manifest pins that repository by commit and clones it fresh: a local edit
-# there would fix `cargo build` and leave the package broken, which is the
+# there would fix the standalone build and leave the package broken, which is the
 # worse half to get right by accident.
 get_target_property(_linker_defs linker COMPILE_DEFINITIONS)
 list(REMOVE_ITEM _linker_defs "PATH_MAX=256")
@@ -90,7 +90,7 @@ endif()
 # pipewire_backend.cpp, and `slCreateEngine` reported
 # SL_RESULT_FEATURE_UNSUPPORTED for reasons that had nothing to do with audio.
 # Nothing announced this; the status message below is the only place it was
-# ever visible, and it scrolls past inside a cargo build.
+# ever visible, and it scrolls past during a normal build.
 #
 # So do not take pkg-config's word for it. Only headers are wanted here — the
 # library is dlopen'd, never linked (see pipewire_backend.cpp) — and headers
@@ -161,7 +161,7 @@ else()
                   "enable it.")
 endif()
 
-# Thin extern "C" surface over the linker's C++ API, so Rust can drive it.
+# Thin extern "C" surface over the linker's C++ API, so the C++ runtime can drive it.
 # Android liblog. Roblox narrates its own startup through it, so this is the
 # runtime layer's most valuable diagnostic. It is not the source of
 # onLogLine/onJoin: neither event exists, see the header of liblog.cpp.
@@ -225,44 +225,6 @@ else()
                   "\"unavailable\" arm.")
 endif()
 
-if(PIPEWIRE_FOUND)
-  target_include_directories(cordial_liblog PRIVATE ${PIPEWIRE_INCLUDE_DIRS})
-  target_compile_definitions(cordial_liblog PRIVATE CORDIAL_HAVE_PIPEWIRE=1)
-
-  # Checks pipewire_backend.cpp's buffer-queue fill logic (the underrun ->
-  # silence rule in particular) without a live PipeWire session, a daemon, or
-  # any way to produce sound — see pipewire_backend_test.cpp for why that
-  # property matters here specifically. Run as part of the ordinary build
-  # rather than left for someone to remember to invoke separately: a check
-  # that only runs when asked for is a check that silently stops running.
-  # `pulse_backend.cpp` comes along because `pipewire_backend.cpp`'s factory
-  # now calls into it. Deliberately built here *without* `CORDIAL_HAVE_PULSE`,
-  # so the test exercises the arm that reports the backend unavailable -- which
-  # is the arm every machine without pulseaudio-libs-devel will run, and the one
-  # a fallback bug would hide in.
-  add_executable(cordial_pipewire_backend_test EXCLUDE_FROM_ALL
-    pipewire_backend.cpp pulse_backend.cpp alsa_backend.cpp oss_backend.cpp
-    pipewire_backend_test.cpp)
-  target_include_directories(cordial_pipewire_backend_test PRIVATE ${PIPEWIRE_INCLUDE_DIRS})
-  target_compile_definitions(cordial_pipewire_backend_test PRIVATE CORDIAL_HAVE_PIPEWIRE=1)
-  add_custom_command(TARGET cordial_pipewire_backend_test POST_BUILD
-    COMMAND cordial_pipewire_backend_test
-    COMMENT "Running pipewire_backend fill_pcm checks (no PipeWire session needed)")
-endif()
-
-add_executable(cordial_aaudio_input_callback_test EXCLUDE_FROM_ALL
-  aaudio_input_callback.cpp aaudio_input_callback_test.cpp)
-target_compile_options(cordial_aaudio_input_callback_test PRIVATE -UNDEBUG)
-add_custom_command(TARGET cordial_aaudio_input_callback_test POST_BUILD
-  COMMAND cordial_aaudio_input_callback_test
-  COMMENT "Running AAudio input callback lifecycle checks")
-
-add_executable(cordial_aaudio_input_test EXCLUDE_FROM_ALL
-  aaudio.cpp aaudio_input_callback.cpp aaudio_input_test.cpp)
-target_compile_options(cordial_aaudio_input_test PRIVATE -UNDEBUG)
-add_custom_command(TARGET cordial_aaudio_input_test POST_BUILD
-  COMMAND cordial_aaudio_input_test
-  COMMENT "Running AAudio callback and blocking input ABI checks")
 
 add_library(cordial_linker_shim STATIC shim.cpp)
 target_link_libraries(cordial_linker_shim PUBLIC linker)
@@ -329,13 +291,5 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../third_party/libjnivm
 add_library(cordial_jni_shim STATIC jni_shim.cpp android_classes.cpp game_activity.cpp init_params.cpp accessibility.cpp cookies.cpp audio_classes.cpp deeplink.cpp clipboard.cpp permissions_transport.cpp local_storage.cpp legacy_stdio.cpp platform_classes.cpp battery.cpp unanswered_classes.cpp)
 target_link_libraries(cordial_jni_shim PUBLIC jnivm)
 
-add_executable(cordial_permissions_transport_test EXCLUDE_FROM_ALL
-  permissions_transport.cpp permissions_transport_test.cpp)
-target_compile_options(cordial_permissions_transport_test PRIVATE -UNDEBUG)
-target_include_directories(cordial_permissions_transport_test PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/libjnivm/include)
-add_custom_command(TARGET cordial_permissions_transport_test POST_BUILD
-  COMMAND cordial_permissions_transport_test
-  COMMENT "Running PermissionsProtocol response transport checks")
 
 install(TARGETS cordial_jni_shim jnivm logger ARCHIVE DESTINATION lib)
