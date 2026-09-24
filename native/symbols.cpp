@@ -1,5 +1,6 @@
 #include "symbols.h"
 #include "elf_imports.h"
+#include "host_window.h"
 
 #include <dlfcn.h>
 #include <cctype>
@@ -7,6 +8,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <utility>
 
 extern "C" {
 void cordial_linker_init();
