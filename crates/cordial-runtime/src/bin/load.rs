@@ -163,10 +163,6 @@ env:
                                      what the engine asked for. A plugin can ask
                                      for one through the CordialPresentMode flag
                                      key; this variable overrules it
-  CORDIAL_GAMEMODE=0                 do not ask Feral GameMode to raise the CPU
-                                     governor and priority for this process.
-                                     On by default; a machine without gamemoded
-                                     says so once and carries on
   CORDIAL_COUNT_GL=1                 count eglCreateWindowSurface/MakeCurrent/
                                      SwapBuffers/glClear/Draw*/CompileShader
                                      calls and report them after --run
